@@ -43,17 +43,16 @@ export const Navbar: React.FC<NavbarProps> = ({
     currentUser,
     demoUsers,
     switchUser,
-    soundSettings,
+    soundEnabled,
     toggleSound,
-    toggleVoice,
-    toggleMute
+    voiceEnabled,
+    toggleVoice
   } = useAuth();
 
   const [searchVal, setSearchVal] = useState('');
   const [showAlertMenu, setShowAlertMenu] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  const { currentUser, demoUsers, switchUser, soundEnabled, toggleSound, voiceEnabled, toggleVoice } = useAuth();
   const activeAlerts = alerts.filter(a => a.status === 'active');
 
   const handleSearchSubmit = (e: React.FormEvent) => {

@@ -324,6 +324,10 @@ DISTANCE_MATRIX_KM = {
     (6, 7): 12.5, (7, 6): 12.5,
 }
 
+# Compatibility aliases for emergency request routing
+NASHIK_TRAVEL_TIMES = TRAVEL_TIME_MATRIX
+NASHIK_DISTANCES_KM = DISTANCE_MATRIX_KM
+
 # Verified Hackathon Demo Personas
 DEMO_USERS = [
     {

@@ -3,23 +3,6 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Foreig
 from sqlalchemy.orm import relationship
 from .database import Base
 
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(120), unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
-    name = Column(String(150), nullable=False)
-    role = Column(String(50), nullable=False)  # network_admin, hospital_staff, blood_bank_staff, driver
-    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
-    phone = Column(String(50), nullable=True)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-    facility = relationship("Facility", foreign_keys=[facility_id])
-    driver_profile = relationship("Driver", back_populates="user", uselist=False)
-
-
 class Facility(Base):
     __tablename__ = "facilities"
 
@@ -49,7 +32,7 @@ class Facility(Base):
 
     inventory_items = relationship("InventoryItem", back_populates="facility")
     demands = relationship("DemandRecord", back_populates="facility")
-    emergency_requests = relationship("EmergencyBloodRequest", back_populates="hospital")
+    emergency_requests = relationship("EmergencyRequest", back_populates="facility")
     alerts = relationship("Alert", back_populates="facility")
     users = relationship("User", back_populates="facility")
 
@@ -87,24 +70,6 @@ class Driver(Base):
 
     user = relationship("User", back_populates="driver_profile")
     assignments = relationship("Transfer", back_populates="driver")
-
-
-class Driver(Base):
-    __tablename__ = "drivers"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
-    name = Column(String(150), nullable=False)
-    phone = Column(String(50), nullable=False)
-    vehicle_type = Column(String(50), default="Cold-Chain Refrigerated Van")  # Cold-Chain Refrigerated Van, Dedicated Medical Bike, Ambulance
-    vehicle_number = Column(String(50), default="MH-15-EG-4402")
-    current_lat = Column(Float, default=19.9975)
-    current_lng = Column(Float, default=73.7898)
-    status = Column(String(50), default="available")  # available, assigned, in_transit, off_duty
-    last_location_update = Column(DateTime, default=datetime.datetime.utcnow)
-
-    user = relationship("User", back_populates="driver_profile")
-    transfers = relationship("Transfer", back_populates="driver")
 
 
 class InventoryItem(Base):
@@ -152,7 +117,7 @@ class EmergencyRequest(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
-    facility = relationship("Facility")
+    facility = relationship("Facility", back_populates="emergency_requests")
     transfers = relationship("Transfer", back_populates="emergency_request")
 
 
@@ -175,8 +140,7 @@ class EmergencyBloodRequest(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
-    hospital = relationship("Facility", back_populates="emergency_requests")
-    transfers = relationship("Transfer", back_populates="emergency_request")
+    hospital = relationship("Facility", foreign_keys=[hospital_id])
 
 
 class DemandRecord(Base):
@@ -226,12 +190,6 @@ class Transfer(Base):
 
     optimization_run_id = Column(String(64), nullable=True, index=True)
     rationale = Column(Text, nullable=True)
-
-    # Driver & Logistics
-    driver_id = Column(Integer, ForeignKey("drivers.id"), nullable=True)
-    driver_status = Column(String(30), default="unassigned")  # unassigned, assigned, accepted, en_route_pickup, picked_up, in_transit, delivered
-    temperature_current_c = Column(Float, default=4.0)
-    temperature_status = Column(String(20), default="normal")  # normal, warning, critical_excursion
     eta_minutes = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -276,6 +234,8 @@ class Alert(Base):
     hours_remaining = Column(Float, nullable=True)
     status = Column(String(20), default="active")  # active, acknowledged, resolved
     email_delivery_status = Column(String(50), default="Simulated SMS/Email")
+    transfer_id = Column(String(64), nullable=True)
+    spoken_announcement = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     acknowledged_at = Column(DateTime, nullable=True)
 

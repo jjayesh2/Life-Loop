@@ -13,19 +13,19 @@ from sqlalchemy import func
 
 from .database import engine, Base, get_db
 from .models import (
-    Facility, User, Driver, InventoryItem, EmergencyRequest, DemandRecord,
+    Facility, User, Driver, InventoryItem, EmergencyRequest, EmergencyBloodRequest, DemandRecord,
     Transfer, TemperatureLog, Alert, TraceabilityEvent, Scenario,
     AuditLog, SystemSetting
 )
 from .schemas import (
-    FacilityOut, UserOut, DriverOut, InventoryItemOut, InventoryItemCreate,
+    FacilityOut, FacilityCreate, FacilityUpdate, UserOut, DriverOut, InventoryItemOut, InventoryItemCreate,
     DemandRecordOut, EmergencyRequestCreate, EmergencyRequestOut,
     TemperatureLogOut, TransferOut, AlertOut, OptimizationRequest,
     OptimizationResult, SimulationEventRequest, DashboardSummary,
-    AuditLogOut, RecordMovementRequest
+    AuditLogOut, RecordMovementRequest, UserLogin, AuthResponse, SourceRecommendationItem
 )
 from .optimizer.engine import MILPOptimizer, is_compatible
-from .seed import seed_database, TRAVEL_TIME_MATRIX
+from .seed import seed_database, TRAVEL_TIME_MATRIX, NASHIK_TRAVEL_TIMES, NASHIK_DISTANCES_KM
 from .services.traceability_service import generate_qr_svg_or_base64, record_movement_event
 from .services.expiry_service import evaluate_expiry_alerts, acknowledge_alert, resolve_alert
 from .services.forecasting_service import get_demand_forecasts
@@ -336,37 +336,6 @@ def update_facility(fac_id: int, f_in: FacilityUpdate, db: Session = Depends(get
 # ==========================================
 # 4. EMERGENCY BLOOD REQUESTS WORKFLOW
 # ==========================================
-@app.post("/api/emergency-requests", response_model=EmergencyRequestOut)
-async def create_emergency_blood_request(req_in: EmergencyRequestCreate, db: Session = Depends(get_db)):
-    req = await submit_emergency_request(
-        db=db,
-        hospital_id=req_in.hospital_id,
-        blood_group=req_in.blood_group,
-        component_type=req_in.component_type,
-        quantity_needed=req_in.quantity_needed,
-        urgency=req_in.urgency,
-        required_by_hours=req_in.required_by_hours,
-        clinical_notes=req_in.clinical_notes
-    )
-
-    recs = json.loads(req.source_recommendations_json or "[]")
-    return EmergencyRequestOut(
-        id=req.id,
-        request_id=req.request_id,
-        hospital_id=req.hospital_id,
-        hospital_name=req.hospital.name if req.hospital else None,
-        blood_group=req.blood_group,
-        component_type=req.component_type,
-        quantity_needed=req.quantity_needed,
-        quantity_fulfilled=req.quantity_fulfilled,
-        urgency=req.urgency,
-        required_by_time=req.required_by_time,
-        clinical_notes=req.clinical_notes,
-        status=req.status,
-        source_recommendations=[SourceRecommendationItem(**r) for r in recs],
-        created_at=req.created_at,
-        updated_at=req.updated_at
-    )
 
 @app.get("/api/emergency-requests", response_model=List[EmergencyRequestOut])
 def get_emergency_requests(hospital_id: Optional[int] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
@@ -847,10 +816,11 @@ def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
     res = []
     for tx in transfers:
         hist = json.loads(tx.temperature_history_json or "[]")
+        req_val = getattr(tx, 'request_id', None) or (str(tx.emergency_request_id) if getattr(tx, 'emergency_request_id', None) else None)
         res.append(TransferOut(
             id=tx.id,
             transfer_id=tx.transfer_id,
-            request_id=tx.request_id,
+            request_id=req_val,
             origin_facility_id=tx.origin_facility_id,
             origin_name=tx.origin.name if tx.origin else None,
             destination_facility_id=tx.destination_facility_id,
@@ -869,7 +839,7 @@ def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
             travel_time_minutes=tx.travel_time_minutes,
             distance_km=tx.distance_km,
             eta_minutes=tx.eta_minutes,
-            eta_type=tx.eta_type,
+            eta_type=getattr(tx, 'eta_type', 'calculated'),
             status=tx.status,
             cancellation_reason=tx.cancellation_reason,
             optimization_run_id=tx.optimization_run_id,
@@ -1012,6 +982,43 @@ def run_optimization(req: OptimizationRequest, db: Session = Depends(get_db)):
         now=now
     )
     result = optimizer.solve()
+
+    # Persist proposed transfers in DB
+    if result.get("is_feasible") and result.get("proposed_transfers"):
+        run_id = result["run_id"]
+        for prop in result["proposed_transfers"]:
+            existing = db.query(Transfer).filter(
+                Transfer.inventory_item_id == prop["item_id"],
+                Transfer.destination_facility_id == prop["destination_id"],
+                Transfer.status == "proposed"
+            ).first()
+            if not existing:
+                tx = Transfer(
+                    transfer_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
+                    origin_facility_id=prop["origin_id"],
+                    destination_facility_id=prop["destination_id"],
+                    inventory_item_id=prop["item_id"],
+                    component_type=prop["component_type"],
+                    blood_group=prop["blood_group"],
+                    quantity=prop["quantity"],
+                    travel_time_minutes=prop["travel_time_minutes"],
+                    distance_km=round(prop["travel_time_minutes"] * 0.75, 1),
+                    status="proposed",
+                    optimization_run_id=run_id,
+                    rationale=prop.get("explanation", "MILP Cost Optimal Transfer"),
+                    created_at=now
+                )
+                db.add(tx)
+
+        audit = AuditLog(
+            action="OPTIMIZATION_SOLVED",
+            actor="MILPOptimizer",
+            entity_type="OptimizationRun",
+            entity_id=run_id,
+            details=f"Solved MILP in {result.get('runtime_seconds', 0.1)}s. Generated {len(result['proposed_transfers'])} proposed transfers."
+        )
+        db.add(audit)
+        db.commit()
 
     LATEST_OPTIMIZATION_RESULT = result
     return result

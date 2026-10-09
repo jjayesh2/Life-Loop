@@ -16,24 +16,11 @@ export const NetworkMapPage: React.FC<NetworkMapPageProps> = ({ facilities, tran
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">
-            Nashik District Blood Supply & Transit Network
-          </h1>
-          <p className="text-xs text-slate-500">
-            Surveillance of 12 verified hospitals & blood banks across Nashik City and District, Maharashtra.
-          </p>
-        </div>
-        <div className="flex items-center space-x-2 text-xs">
-          <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center space-x-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>7 Connected (Live API)</span>
-          </span>
-          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-semibold">
-            5 Public Directory
-          </span>
-        </div>
+      <div>
+        <h1 className="text-xl font-black text-slate-900 tracking-tight">Nashik District Blood Logistics &amp; Repository Network</h1>
+        <p className="text-xs text-slate-500">
+          Geographic surveillance of verified hospital nodes, charitable blood banks, and in-transit cold chain corridors across Nashik, Maharashtra.
+        </p>
       </div>
 
       {/* Main Map Component */}

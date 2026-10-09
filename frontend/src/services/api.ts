@@ -14,14 +14,31 @@ import {
 
 const BASE_URL = '/api';
 
+let activeUserHeaders: Record<string, string> = {};
+
+export function setActiveUserHeaders(headers: Record<string, string>) {
+  activeUserHeaders = { ...headers };
+}
+
+function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
+  return {
+    ...activeUserHeaders,
+    ...extraHeaders
+  };
+}
+
 export async function fetchDashboard(): Promise<DashboardSummary> {
-  const res = await fetch(`${BASE_URL}/dashboard`);
+  const res = await fetch(`${BASE_URL}/dashboard`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch dashboard summary');
   return res.json();
 }
 
 export async function fetchFacilities(): Promise<Facility[]> {
-  const res = await fetch(`${BASE_URL}/facilities`);
+  const res = await fetch(`${BASE_URL}/facilities`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch facilities');
   return res.json();
 }
@@ -38,7 +55,9 @@ export async function fetchInventory(params?: {
   if (params?.component_type) query.set('component_type', params.component_type);
   if (params?.status) query.set('status', params.status);
 
-  const res = await fetch(`${BASE_URL}/inventory?${query.toString()}`);
+  const res = await fetch(`${BASE_URL}/inventory?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch inventory');
   return res.json();
 }
@@ -46,7 +65,7 @@ export async function fetchInventory(params?: {
 export async function createInventoryItem(data: Partial<InventoryItem>): Promise<InventoryItem> {
   const res = await fetch(`${BASE_URL}/inventory`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data)
   });
   if (!res.ok) throw new Error('Failed to create inventory item');
@@ -54,7 +73,9 @@ export async function createInventoryItem(data: Partial<InventoryItem>): Promise
 }
 
 export async function lookupTraceability(identifier: string): Promise<InventoryItem> {
-  const res = await fetch(`${BASE_URL}/traceability/${encodeURIComponent(identifier)}`);
+  const res = await fetch(`${BASE_URL}/traceability/${encodeURIComponent(identifier)}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Item '${identifier}' not found`);
@@ -70,7 +91,7 @@ export async function recordMovementEvent(itemId: number, payload: {
 }): Promise<any> {
   const res = await fetch(`${BASE_URL}/traceability/${itemId}/events`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error('Failed to record movement event');
@@ -79,26 +100,46 @@ export async function recordMovementEvent(itemId: number, payload: {
 
 export async function fetchAlerts(status?: string): Promise<Alert[]> {
   const url = status ? `${BASE_URL}/alerts?status=${status}` : `${BASE_URL}/alerts`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch alerts');
   return res.json();
 }
 
 export async function triggerExpiryCheck(): Promise<any> {
-  const res = await fetch(`${BASE_URL}/alerts/run-expiry-check`, { method: 'POST' });
+  const res = await fetch(`${BASE_URL}/alerts/run-expiry-check`, {
+    method: 'POST',
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to run expiry check');
   return res.json();
 }
 
 export async function acknowledgeAlert(alertId: number): Promise<any> {
-  const res = await fetch(`${BASE_URL}/alerts/${alertId}/acknowledge`, { method: 'POST' });
+  const res = await fetch(`${BASE_URL}/alerts/${alertId}/acknowledge`, {
+    method: 'POST',
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to acknowledge alert');
+  return res.json();
+}
+
+export async function resolveAlert(alertId: number, notes?: string): Promise<any> {
+  const res = await fetch(`${BASE_URL}/alerts/${alertId}/resolve`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ notes: notes || 'Resolved by authorized operator' })
+  });
+  if (!res.ok) throw new Error('Failed to resolve alert');
   return res.json();
 }
 
 export async function fetchDemands(facilityId?: number): Promise<DemandRecord[]> {
   const url = facilityId ? `${BASE_URL}/demand?facility_id=${facilityId}` : `${BASE_URL}/demand`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch demands');
   return res.json();
 }
@@ -108,7 +149,9 @@ export async function fetchForecasts(facilityId?: number, componentType?: string
   if (facilityId) query.set('facility_id', facilityId.toString());
   if (componentType) query.set('component_type', componentType);
 
-  const res = await fetch(`${BASE_URL}/forecasts?${query.toString()}`);
+  const res = await fetch(`${BASE_URL}/forecasts?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch forecasts');
   return res.json();
 }
@@ -120,7 +163,7 @@ export async function runOptimization(weights?: {
 }): Promise<OptimizationResult> {
   const res = await fetch(`${BASE_URL}/optimization/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       scenario_id: 'active',
       weight_unmet_demand: weights?.unmet_demand ?? 100.0,
@@ -133,21 +176,39 @@ export async function runOptimization(weights?: {
 }
 
 export async function fetchLatestOptimization(): Promise<any> {
-  const res = await fetch(`${BASE_URL}/optimization/latest`);
+  const res = await fetch(`${BASE_URL}/optimization/latest`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch latest optimization');
   return res.json();
 }
 
 export async function fetchTransfers(status?: string): Promise<Transfer[]> {
   const url = status ? `${BASE_URL}/transfers?status=${status}` : `${BASE_URL}/transfers`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch transfers');
   return res.json();
 }
 
-export async function approveTransfer(transferId: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/transfers/${transferId}/approve`, { method: 'POST' });
+export async function approveTransfer(transferId: string, authorizedQuantity?: number): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${transferId}/approve`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(authorizedQuantity !== undefined ? { authorized_quantity: authorizedQuantity } : {})
+  });
   if (!res.ok) throw new Error('Failed to approve transfer');
+  return res.json();
+}
+
+export async function rejectTransfer(transferId: string, reason?: string): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${transferId}/reject`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ reason: reason || 'Facility declined transfer proposal due to clinical reserve policy' })
+  });
+  if (!res.ok) throw new Error('Failed to reject transfer proposal');
   return res.json();
 }
 
@@ -226,165 +287,75 @@ export async function askCopilot(query: string): Promise<{ answer: string; type:
   return res.json();
 }
 
-// ==========================================
-// AUTH & DEMO ROLES
-// ==========================================
-export async function fetchDemoUsers(): Promise<User[]> {
+// ----------------------------------------
+// Role-based Auth & Demo Switcher
+// ----------------------------------------
+export async function fetchDemoUsers(): Promise<any[]> {
   const res = await fetch(`${BASE_URL}/auth/demo-users`);
   if (!res.ok) throw new Error('Failed to fetch demo users');
   return res.json();
 }
 
-export async function loginUser(email: string, password: string = 'demo123'): Promise<{ access_token: string; user: User }> {
-  const res = await fetch(`${BASE_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password })
+// ----------------------------------------
+// Emergency Blood Requests
+// ----------------------------------------
+export async function fetchEmergencyRequests(facilityId?: number): Promise<any[]> {
+  const url = facilityId ? `${BASE_URL}/emergency-requests?facility_id=${facilityId}` : `${BASE_URL}/emergency-requests`;
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Login failed');
-  }
-  return res.json();
-}
-
-// ==========================================
-// EMERGENCY BLOOD REQUESTS
-// ==========================================
-export async function fetchEmergencyRequests(params?: {
-  hospital_id?: number;
-  status?: string;
-}): Promise<EmergencyBloodRequest[]> {
-  const query = new URLSearchParams();
-  if (params?.hospital_id) query.set('hospital_id', params.hospital_id.toString());
-  if (params?.status) query.set('status', params.status);
-
-  const res = await fetch(`${BASE_URL}/emergency-requests?${query.toString()}`);
   if (!res.ok) throw new Error('Failed to fetch emergency requests');
   return res.json();
 }
 
-export async function submitEmergencyRequest(data: {
-  hospital_id: number;
+export async function createEmergencyRequest(data: {
+  requesting_facility_id: number;
   blood_group: string;
   component_type: string;
   quantity_needed: number;
-  urgency: string;
-  required_by_time?: string;
-  clinical_notes?: string;
-}): Promise<EmergencyBloodRequest> {
+  urgency?: string;
+  required_by_hours?: number;
+  delivery_destination?: string;
+  contact_phone?: string;
+  notes?: string;
+}): Promise<any> {
   const res = await fetch(`${BASE_URL}/emergency-requests`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data)
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to submit emergency blood request');
-  }
+  if (!res.ok) throw new Error('Failed to create emergency request');
   return res.json();
 }
 
-export async function approveEmergencyRequest(
-  requestId: string,
-  payload: {
-    source_facility_id: number;
-    quantity: number;
-    approver_name?: string;
-  }
-): Promise<any> {
-  const res = await fetch(`${BASE_URL}/emergency-requests/${encodeURIComponent(requestId)}/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to approve emergency request');
-  }
-  return res.json();
-}
-
-// ==========================================
-// DRIVER OPERATIONS & DISPATCH
-// ==========================================
-export async function fetchDrivers(): Promise<Driver[]> {
+// ----------------------------------------
+// Drivers & Logistics
+// ----------------------------------------
+export async function fetchDrivers(): Promise<any[]> {
   const res = await fetch(`${BASE_URL}/drivers`);
   if (!res.ok) throw new Error('Failed to fetch drivers');
   return res.json();
 }
 
-export async function fetchDriverAssignments(driverId: number): Promise<Transfer[]> {
-  const res = await fetch(`${BASE_URL}/drivers/${driverId}/assignments`);
-  if (!res.ok) throw new Error('Failed to fetch driver assignments');
+export async function assignDriverToTransfer(transferId: string, driverId?: number): Promise<any> {
+  const url = driverId ? `${BASE_URL}/transfers/${transferId}/assign-driver?driver_id=${driverId}` : `${BASE_URL}/transfers/${transferId}/assign-driver`;
+  const res = await fetch(url, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to assign driver');
   return res.json();
 }
 
-export async function driverRespond(
-  transferId: string,
-  payload: {
-    driver_id: number;
-    action: 'accept' | 'decline';
-    decline_reason?: string;
-  }
-): Promise<any> {
-  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/driver-response`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to process driver response');
-  }
+export async function submitDriverAction(transferId: string, action: 'accept' | 'pickup' | 'deliver'): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${transferId}/driver-action?action=${action}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to submit driver action ${action}`);
   return res.json();
 }
 
-export async function confirmDriverPickup(
-  transferId: string,
-  payload?: { driver_name?: string }
-): Promise<any> {
-  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/pickup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {})
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to confirm pickup');
-  }
-  return res.json();
-}
-
-export async function confirmDelivery(
-  transferId: string,
-  payload?: { receiver_name?: string }
-): Promise<any> {
-  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/deliver`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {})
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to confirm delivery');
-  }
-  return res.json();
-}
-
-export async function simulateTemperatureSpike(
-  transferId: string,
-  spikeTempC: number = 11.5
-): Promise<any> {
-  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/temperature-spike`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ spike_temp_c: spikeTempC })
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to simulate temperature spike');
-  }
+// ----------------------------------------
+// Cold Chain IoT Simulator
+// ----------------------------------------
+export async function triggerTemperatureSpike(transferId: string, spikeTemp: number = 11.5): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${transferId}/simulate-temperature-spike?spike_temp=${spikeTemp}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to trigger temperature excursion');
   return res.json();
 }
 

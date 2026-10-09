@@ -235,24 +235,10 @@ export const EmergencySimulatorPage: React.FC<EmergencySimulatorProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={() => handleTriggerEvent(
-              'trauma_surge',
-              {
-                facility_id: 1, // Civil Hospital absorbs
-                blood_group: 'A+',
-                quantity: 8
-              },
-              'Warning! Refrigeration compressor tripped at Arpan Blood Bank. Initiating rapid stock evacuation to prevent inventory spoilage.',
-              'arpan_cooler'
-            )}
-            disabled={loading}
-            className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-md shadow-rose-500/20 transition disabled:opacity-50 flex items-center justify-center space-x-2"
-          >
-            <ShieldAlert className="w-4 h-4" />
-            <span>Simulate Compressor Failure (Evacuate Stock)</span>
-          </button>
-        </div>
+          <div className="space-y-3 text-xs">
+            <p className="text-slate-600">
+              Simulates arrival of emergency mobile blood collection drive arriving at Apollo Hospitals Nashik (+12 units of O+ RBC from Panchavati camp).
+            </p>
 
         {/* Scenario 4: Bytco Hospital Mega Voluntary Blood Drive */}
         <div className={`bg-white rounded-2xl border p-5 shadow-sm space-y-4 transition ${

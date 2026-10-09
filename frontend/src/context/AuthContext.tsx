@@ -1,81 +1,76 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../types';
-import { fetchDemoUsers } from '../services/api';
+import { fetchDemoUsers, setActiveUserHeaders } from '../services/api';
 import { soundService } from '../services/soundService';
 
 interface AuthContextType {
   currentUser: User | null;
   demoUsers: User[];
   switchUser: (user: User) => void;
-  soundSettings: {
-    soundEnabled: boolean;
-    voiceEnabled: boolean;
-    isMuted: boolean;
-  };
+  soundEnabled: boolean;
   toggleSound: () => void;
+  voiceEnabled: boolean;
   toggleVoice: () => void;
-  toggleMute: () => void;
-  speak: (text: string, priority?: 'normal' | 'urgent') => void;
-  playSuccess: () => void;
-  playAlarm: () => void;
-  playPing: () => void;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthContextType>({
+  currentUser: null,
+  demoUsers: [],
+  switchUser: () => {},
+  soundEnabled: true,
+  toggleSound: () => {},
+  voiceEnabled: true,
+  toggleVoice: () => {},
+});
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [demoUsers, setDemoUsers] = useState<User[]>([]);
-  const [soundSettings, setSoundSettings] = useState(soundService.getSettings());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(true);
 
   useEffect(() => {
-    // Subscribe to sound settings updates
-    const unsubscribe = soundService.subscribe(() => {
-      setSoundSettings(soundService.getSettings());
-    });
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    // Load demo users from API
     fetchDemoUsers()
-      .then(users => {
+      .then((users) => {
         setDemoUsers(users);
-        // Default to Admin or saved user
-        const savedEmail = localStorage.getItem('lifeloop_demo_user_email');
-        const match = users.find(u => u.email === savedEmail) || users[0];
-        if (match) {
-          setCurrentUser(match);
+        if (users && users.length > 0) {
+          const savedId = localStorage.getItem('lifeloop_user_id');
+          const matched = savedId ? users.find(u => u.id === Number(savedId)) : null;
+          const initialUser = matched || users[0];
+          setCurrentUser(initialUser);
+          setActiveUserHeaders({
+            'X-User-Id': initialUser.id.toString(),
+            'X-User-Role': initialUser.role,
+            ...(initialUser.facility_id ? { 'X-Facility-Id': initialUser.facility_id.toString() } : {})
+          });
         }
       })
-      .catch(err => {
-        console.warn('Could not load demo users:', err);
-        // Fallback default admin
-        const fallbackUser: User = {
-          id: 1,
-          name: 'Nashik District Health Admin',
-          email: 'admin@lifeloop.in',
-          role: 'network_admin'
-        };
-        setCurrentUser(fallbackUser);
-      });
+      .catch((err) => console.error("Error loading demo users:", err));
   }, []);
 
   const switchUser = (user: User) => {
     setCurrentUser(user);
-    localStorage.setItem('lifeloop_demo_user_email', user.email);
-    soundService.playPing();
-    soundService.speak(`Switched role to ${user.name}`);
+    localStorage.setItem('lifeloop_user_id', user.id.toString());
+    setActiveUserHeaders({
+      'X-User-Id': user.id.toString(),
+      'X-User-Role': user.role,
+      ...(user.facility_id ? { 'X-Facility-Id': user.facility_id.toString() } : {})
+    });
+    soundService.playAlertPing();
+    soundService.speak(`Switched profile to ${user.name}, role ${user.role.replace('_', ' ')}.`);
   };
 
-  const toggleSound = () => soundService.toggleSound();
-  const toggleVoice = () => soundService.toggleVoice();
-  const toggleMute = () => soundService.toggleMute();
+  const toggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    soundService.setSoundEnabled(next);
+  };
 
-  const speak = (text: string, priority?: 'normal' | 'urgent') => soundService.speak(text, priority);
-  const playSuccess = () => soundService.playSuccessChime();
-  const playAlarm = () => soundService.playEmergencyAlarm();
-  const playPing = () => soundService.playNoticePing();
+  const toggleVoice = () => {
+    const next = !voiceEnabled;
+    setVoiceEnabled(next);
+    soundService.setVoiceEnabled(next);
+  };
 
   return (
     <AuthContext.Provider
@@ -83,25 +78,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         currentUser,
         demoUsers,
         switchUser,
-        soundSettings,
+        soundEnabled,
         toggleSound,
-        toggleVoice,
-        toggleMute,
-        speak,
-        playSuccess,
-        playAlarm,
-        playPing
+        voiceEnabled,
+        toggleVoice
       }}
     >
       {children}
     </AuthContext.Provider>
   );
-}
+};
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-}
+export const useAuth = () => useContext(AuthContext);

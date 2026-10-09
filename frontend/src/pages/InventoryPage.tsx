@@ -17,6 +17,7 @@ import {
 import { InventoryItem, Facility } from '../types';
 import { fetchInventory, createInventoryItem, recordMovementEvent } from '../services/api';
 import { BagLabelModal } from '../components/BagLabelModal';
+import { useAuth } from '../context/AuthContext';
 
 interface InventoryPageProps {
   facilities: Facility[];
@@ -24,13 +25,18 @@ interface InventoryPageProps {
 }
 
 export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpenTraceability }) => {
+  const { currentUser } = useAuth();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('');
   const [componentFilter, setComponentFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [facilityFilter, setFacilityFilter] = useState<number | ''>('');
+  const [facilityFilter, setFacilityFilter] = useState<number | ''>(
+    currentUser?.role && ['blood_bank_officer', 'hospital_staff'].includes(currentUser.role) && currentUser.facility_id
+      ? currentUser.facility_id
+      : ''
+  );
   
   // Modals & Drawers
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
@@ -41,7 +47,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
 
   // Form State for Adding Item
   const [formData, setFormData] = useState({
-    facility_id: 1,
+    facility_id: currentUser?.facility_id || 1,
     blood_group: 'O-',
     component_type: 'Red Blood Cells',
     quantity: 1,
@@ -49,6 +55,13 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
     storage_temp_c: 4.0,
     expiry_days: 35
   });
+
+  useEffect(() => {
+    if (currentUser?.facility_id && currentUser?.role in ['blood_bank_officer', 'hospital_staff']) {
+      setFacilityFilter(currentUser.facility_id);
+      setFormData(prev => ({ ...prev, facility_id: currentUser.facility_id! }));
+    }
+  }, [currentUser]);
 
   const loadData = async () => {
     setLoading(true);
@@ -139,13 +152,22 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
       {/* Header & Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">Blood Inventory Management</h1>
+          <div className="flex items-center space-x-2">
+            <span className="text-[10px] bg-teal-100 text-teal-800 font-bold px-2 py-0.5 rounded border border-teal-200 uppercase tracking-wider">
+              {currentUser?.role === 'admin' ? 'Network-Wide Inventory' : (currentUser?.facility_name || 'Facility Inventory')}
+            </span>
+          </div>
+          <h1 className="text-xl font-black text-slate-900 tracking-tight mt-0.5">
+            {currentUser?.role === 'blood_bank_officer'
+              ? 'My Blood Bank Inventory'
+              : currentUser?.role === 'hospital_staff'
+              ? 'Hospital Reserve Stock Visibility'
+              : 'Blood Inventory Monitoring'}
+          </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Individual tracked units, batch references, cold-chain parameters, and status tracking.{' '}
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wide align-middle">
-              live
-            </span>{' '}
-            badge = unit ingested from the e-RaktKosh Nashik snapshot dated 2026-10-09.
+            {currentUser?.role === 'admin'
+              ? 'Network-wide batch records, cold-chain parameters, and status tracking across all verified Nashik facilities.'
+              : `Authorized inventory records maintained for ${currentUser?.facility_name || 'assigned facility'}.`}
           </p>
         </div>
 
@@ -157,20 +179,24 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
             <Download className="w-3.5 h-3.5" />
             <span>Export CSV</span>
           </button>
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="flex items-center space-x-1 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold shadow-sm transition"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Import CSV</span>
-          </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center space-x-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Register Blood Unit</span>
-          </button>
+          {currentUser?.role && ['admin', 'blood_bank_officer'].includes(currentUser.role) && (
+            <>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="flex items-center space-x-1 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold shadow-sm transition"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Import CSV</span>
+              </button>
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center space-x-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Register Blood Unit</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -228,17 +254,23 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
           <option value="expired">Expired</option>
         </select>
 
-        {/* Facility */}
-        <select
-          value={facilityFilter}
-          onChange={(e) => setFacilityFilter(e.target.value ? Number(e.target.value) : '')}
-          className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 font-medium focus:outline-none cursor-pointer"
-        >
-          <option value="">All Facilities</option>
-          {facilities.map(f => (
-            <option key={f.id} value={f.id}>{f.name}</option>
-          ))}
-        </select>
+        {/* Facility - Only Administrators can view/filter across other facilities */}
+        {currentUser?.role === 'admin' ? (
+          <select
+            value={facilityFilter}
+            onChange={(e) => setFacilityFilter(e.target.value ? Number(e.target.value) : '')}
+            className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 font-medium focus:outline-none cursor-pointer"
+          >
+            <option value="">All Facilities</option>
+            {facilities.map(f => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+        ) : (
+          <div className="text-xs font-semibold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+            {currentUser?.facility_name || 'My Facility'}
+          </div>
+        )}
       </div>
 
       {/* Inventory Table */}

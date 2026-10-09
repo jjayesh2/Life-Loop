@@ -10,7 +10,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { Alert, Facility } from '../types';
-import { fetchAlerts, triggerExpiryCheck, acknowledgeAlert } from '../services/api';
+import { fetchAlerts, triggerExpiryCheck, acknowledgeAlert, resolveAlert } from '../services/api';
 
 interface ExpiryAlertsPageProps {
   facilities: Facility[];
@@ -59,6 +59,17 @@ export const ExpiryAlertsPage: React.FC<ExpiryAlertsPageProps> = ({ facilities, 
       loadAlerts();
     } catch (err: any) {
       alert(`Could not acknowledge alert: ${err.message}`);
+    }
+  };
+
+  const handleResolve = async (id: number) => {
+    const notes = prompt("Enter clinical resolution notes (e.g. 'Transfused to emergency surgical patient' or 'Quarantined for disposal'):", "Addressed by authorized blood bank staff");
+    if (!notes) return;
+    try {
+      await resolveAlert(id, notes);
+      loadAlerts();
+    } catch (err: any) {
+      alert(`Could not resolve alert: ${err.message}`);
     }
   };
 
@@ -165,6 +176,16 @@ export const ExpiryAlertsPage: React.FC<ExpiryAlertsPageProps> = ({ facilities, 
           Acknowledged History
         </button>
         <button
+          onClick={() => setFilterStatus('resolved')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+            filterStatus === 'resolved'
+              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          Resolved Archive
+        </button>
+        <button
           onClick={() => setFilterStatus('')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
             filterStatus === ''
@@ -183,8 +204,8 @@ export const ExpiryAlertsPage: React.FC<ExpiryAlertsPageProps> = ({ facilities, 
         ) : alerts.length === 0 ? (
           <div className="p-12 text-center bg-white rounded-xl border border-slate-200 text-slate-500 space-y-2">
             <CheckCircle2 className="w-8 h-8 text-teal-600 mx-auto" />
-            <h4 className="font-bold text-slate-800 text-sm">No Active Expiry Alerts</h4>
-            <p className="text-xs text-slate-400">All current units are safely outside the critical expiry thresholds.</p>
+            <h4 className="font-bold text-slate-800 text-sm">No Alerts Found</h4>
+            <p className="text-xs text-slate-400">No alerts match the selected status filter.</p>
           </div>
         ) : (
           alerts.map((al) => {
@@ -222,6 +243,11 @@ export const ExpiryAlertsPage: React.FC<ExpiryAlertsPageProps> = ({ facilities, 
                       <span className="text-xs font-bold text-slate-900">{al.facility_name}</span>
                       <span className="text-[11px] text-slate-400">•</span>
                       <span className="text-[11px] text-slate-500 font-mono">{al.tracking_id || 'Batch'}</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                        al.status === 'resolved' ? 'bg-emerald-100 text-emerald-800' : (al.status === 'acknowledged' ? 'bg-blue-100 text-blue-800' : 'bg-rose-100 text-rose-800')
+                      }`}>
+                        {al.status}
+                      </span>
                     </div>
 
                     <p className="text-xs text-slate-800 font-medium">{al.message}</p>
@@ -247,16 +273,33 @@ export const ExpiryAlertsPage: React.FC<ExpiryAlertsPageProps> = ({ facilities, 
                       Locate in Inventory
                     </button>
                   )}
-                  {al.status === 'active' ? (
+                  {al.status === 'active' && (
+                    <>
+                      <button
+                        onClick={() => handleAcknowledge(al.id)}
+                        className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
+                      >
+                        Acknowledge
+                      </button>
+                      <button
+                        onClick={() => handleResolve(al.id)}
+                        className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold shadow-sm transition"
+                      >
+                        Resolve Alert
+                      </button>
+                    </>
+                  )}
+                  {al.status === 'acknowledged' && (
                     <button
-                      onClick={() => handleAcknowledge(al.id)}
-                      className="px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
+                      onClick={() => handleResolve(al.id)}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-sm transition"
                     >
-                      Acknowledge Alert
+                      Mark as Resolved
                     </button>
-                  ) : (
-                    <span className="text-[11px] font-semibold text-slate-400 px-3 py-1 bg-slate-100 rounded-md">
-                      Acknowledged
+                  )}
+                  {al.status === 'resolved' && (
+                    <span className="text-[11px] font-semibold text-emerald-700 px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-md">
+                      Resolved
                     </span>
                   )}
                 </div>

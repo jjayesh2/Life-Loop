@@ -95,7 +95,7 @@ export const NetworkMapView: React.FC<NetworkMapViewProps> = ({
 }) => {
   const [showOnlyConnected, setShowOnlyConnected] = useState<boolean>(false);
 
-  // Nashik City & District coordinates center: [19.9975, 73.7898]
+  // Default center around Nashik City & District, Maharashtra, India
   const defaultCenter: [number, number] = [19.9975, 73.7898];
 
   const visibleFacilities = showOnlyConnected

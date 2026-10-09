@@ -103,3 +103,24 @@ def acknowledge_alert(db: Session, alert_id: int, operator: str = "Life-Loop Ope
     db.commit()
     db.refresh(alert)
     return alert
+
+def resolve_alert(db: Session, alert_id: int, resolution_notes: str = "Resolved by authorized operator", operator: str = "Life-Loop Operator") -> Alert:
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise ValueError(f"Alert {alert_id} not found")
+    
+    alert.status = "resolved"
+    
+    audit = AuditLog(
+        action="ALERT_RESOLVED",
+        actor=operator,
+        entity_type="Alert",
+        entity_id=str(alert_id),
+        details=f"Alert #{alert_id} resolved by {operator}. Notes: {resolution_notes}",
+        timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(alert)
+    return alert
+

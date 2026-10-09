@@ -27,6 +27,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 // Types and API
 import { DashboardSummary, Facility, Transfer, Alert } from './types';
 import { fetchDashboard, fetchFacilities, fetchTransfers, fetchAlerts } from './services/api';
+import { useAuth } from './context/AuthContext';
 
 function AppContent() {
   const { currentUser } = useAuth();
@@ -45,6 +46,8 @@ function AppContent() {
 
   // Jump to specific item in Traceability
   const [traceTrackingId, setTraceTrackingId] = useState<string | undefined>(undefined);
+
+  const { currentUser } = useAuth();
 
   const reloadData = async () => {
     try {
@@ -65,7 +68,7 @@ function AppContent() {
 
   useEffect(() => {
     reloadData();
-    const interval = setInterval(reloadData, 15000); // 15s polling for background updates
+    const interval = setInterval(reloadData, 12000); // 12s polling for background updates
     return () => clearInterval(interval);
   }, []);
 
@@ -147,11 +150,14 @@ function AppContent() {
               />
             )}
 
-            {currentTab === 'hospital_portal' && (
-              <HospitalPortal facilities={facilities} />
+            {currentTab === 'hospital' && (
+              <HospitalPortal
+                facilities={facilities}
+                onOpenEmergencyModal={() => setShowEmergencyModal(true)}
+              />
             )}
 
-            {currentTab === 'driver_portal' && (
+            {currentTab === 'driver' && (
               <DriverPortal />
             )}
 
@@ -172,7 +178,7 @@ function AppContent() {
             {currentTab === 'alerts' && (
               <ExpiryAlertsPage
                 facilities={facilities}
-                onNavigateToInventory={(bg) => setCurrentTab('inventory')}
+                onNavigateToInventory={() => setCurrentTab('inventory')}
               />
             )}
 
@@ -228,13 +234,18 @@ function AppContent() {
         onClose={() => setShowCopilot(false)}
       />
 
-      {/* Global Emergency Blood Request Modal */}
-      <EmergencyRequestModal
-        isOpen={showEmergencyModal}
-        onClose={() => setShowEmergencyModal(false)}
-        facilities={facilities}
-        onRequestCreated={reloadData}
-      />
+      {/* STAT Emergency Request Modal */}
+      {showEmergencyModal && (
+        <EmergencyRequestModal
+          facilities={facilities}
+          currentFacilityId={currentUser?.facility_id || selectedFacilityId}
+          onClose={() => setShowEmergencyModal(false)}
+          onRequestCreated={() => {
+            reloadData();
+            setCurrentTab('hospital');
+          }}
+        />
+      )}
     </div>
   );
 }

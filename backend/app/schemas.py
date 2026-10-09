@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -31,12 +31,16 @@ class FacilityBase(BaseModel):
     latitude: float
     longitude: float
     address: str
-    city: str = "Nashik"
-    district: str = "Nashik"
-    state: str = "Maharashtra"
-    pincode: str = "422001"
+    city: Optional[str] = "Nashik"
+    district: Optional[str] = "Nashik"
+    state: Optional[str] = "Maharashtra"
+    pincode: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
+    source_url: Optional[str] = None
+    date_verified: Optional[str] = None
+    verification_status: Optional[str] = "Verified Public Directory"
+    is_connected: Optional[bool] = True
     safety_reserve_units: int = 15
     is_active: bool = True
     is_connected: bool = True
@@ -48,6 +52,31 @@ class FacilityOut(FacilityBase):
     id: int
     total_inventory: Optional[int] = 0
     shortage_count: Optional[int] = 0
+    model_config = ConfigDict(from_attributes=True)
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    name: str
+    role: str
+    facility_id: Optional[int] = None
+    facility_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool = True
+    model_config = ConfigDict(from_attributes=True)
+
+class DriverOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    name: str
+    phone: str
+    vehicle_type: str
+    vehicle_number: str
+    current_lat: float
+    current_lng: float
+    status: str
+    is_active: bool = True
+    model_config = ConfigDict(from_attributes=True)
 
 class FacilityCreate(FacilityBase):
     pass
@@ -110,9 +139,7 @@ class TraceabilityEventOut(BaseModel):
     operator: str
     details: str
     timestamp: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class InventoryItemOut(InventoryItemBase):
     id: int
@@ -121,9 +148,7 @@ class InventoryItemOut(InventoryItemBase):
     created_at: datetime
     updated_at: datetime
     traceability_events: List[TraceabilityEventOut] = []
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- EMERGENCY BLOOD REQUESTS ---
 class SourceRecommendationItem(BaseModel):
@@ -160,30 +185,55 @@ class EmergencyRequestOut(BaseModel):
     status: str
     source_recommendations: List[SourceRecommendationItem] = []
     created_at: datetime
-    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
-# --- DEMAND RECORDS ---
-class DemandRecordOut(BaseModel):
-    id: int
-    facility_id: int
-    facility_name: Optional[str] = None
+class EmergencyRequestCreate(BaseModel):
+    requesting_facility_id: int
     blood_group: str
     component_type: str
     quantity_needed: int
-    urgency: str
-    deadline_hours: float
-    status: str
-    is_simulated: bool
-    created_at: datetime
+    urgency: str = "critical"
+    required_by_hours: float = 4.0
+    delivery_destination: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+class EmergencyRequestOut(BaseModel):
+    id: int
+    request_id: str
+    requesting_facility_id: int
+    requesting_facility_name: Optional[str] = None
+    blood_group: str
+    component_type: str
+    quantity_needed: int
+    quantity_allocated: int = 0
+    quantity_fulfilled: int = 0
+    urgency: str
+    required_by_time: Optional[datetime] = None
+    delivery_destination: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class TemperatureLogOut(BaseModel):
+    id: int
+    transfer_id: int
+    temperature_c: float
+    sensor_id: str
+    is_simulated: bool
+    status: str
+    notes: Optional[str] = None
+    recorded_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 # --- TRANSFERS & SHIPMENTS ---
 class TransferOut(BaseModel):
     id: int
     transfer_id: str
-    request_id: Optional[str] = None
+    emergency_request_id: Optional[int] = None
     origin_facility_id: int
     origin_name: Optional[str] = None
     destination_facility_id: int
@@ -208,19 +258,19 @@ class TransferOut(BaseModel):
     cancellation_reason: Optional[str] = None
     optimization_run_id: Optional[str] = None
     rationale: Optional[str] = None
-
-    temperature_current_c: float
-    temperature_min_c: float
-    temperature_max_c: float
-    temperature_status: str
-    temperature_history: List[Dict[str, Any]] = []
-
+    driver_id: Optional[int] = None
+    driver_name: Optional[str] = None
+    driver_status: Optional[str] = "unassigned"
+    temperature_current_c: Optional[float] = 4.0
+    temperature_status: Optional[str] = "normal"
+    eta_minutes: Optional[float] = None
     created_at: datetime
     approved_at: Optional[datetime] = None
     driver_assigned_at: Optional[datetime] = None
     dispatched_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
 
 # --- ALERTS ---
 class AlertOut(BaseModel):
@@ -241,6 +291,7 @@ class AlertOut(BaseModel):
     spoken_announcement: Optional[str] = None
     created_at: datetime
     acknowledged_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
 
 # --- OPTIMIZATION & SIMULATION ---
 class OptimizationRequest(BaseModel):
@@ -322,6 +373,7 @@ class AuditLogOut(BaseModel):
     entity_id: Optional[str] = None
     details: Optional[str] = None
     timestamp: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 class RecordMovementRequest(BaseModel):
     event_type: str

@@ -13,21 +13,21 @@ from sqlalchemy import func
 
 from .database import engine, Base, get_db
 from .models import (
-    Facility, User, Driver, InventoryItem, EmergencyBloodRequest,
-    DemandRecord, Transfer, Alert, TraceabilityEvent, Scenario,
+    Facility, User, Driver, InventoryItem, EmergencyRequest, DemandRecord,
+    Transfer, TemperatureLog, Alert, TraceabilityEvent, Scenario,
     AuditLog, SystemSetting
 )
 from .schemas import (
-    FacilityOut, FacilityCreate, FacilityUpdate, InventoryItemOut, InventoryItemCreate,
-    DemandRecordOut, TransferOut, AlertOut, OptimizationRequest, OptimizationResult,
-    SimulationEventRequest, DashboardSummary, AuditLogOut, RecordMovementRequest,
-    UserLogin, UserOut, AuthResponse, DriverOut, EmergencyRequestCreate,
-    EmergencyRequestOut, SourceRecommendationItem
+    FacilityOut, UserOut, DriverOut, InventoryItemOut, InventoryItemCreate,
+    DemandRecordOut, EmergencyRequestCreate, EmergencyRequestOut,
+    TemperatureLogOut, TransferOut, AlertOut, OptimizationRequest,
+    OptimizationResult, SimulationEventRequest, DashboardSummary,
+    AuditLogOut, RecordMovementRequest
 )
-from .optimizer.engine import MILPOptimizer
-from .seed import seed_database, NASHIK_TRAVEL_TIMES, NASHIK_DISTANCES_KM, DEMO_USERS
+from .optimizer.engine import MILPOptimizer, is_compatible
+from .seed import seed_database, TRAVEL_TIME_MATRIX
 from .services.traceability_service import generate_qr_svg_or_base64, record_movement_event
-from .services.expiry_service import evaluate_expiry_alerts, acknowledge_alert
+from .services.expiry_service import evaluate_expiry_alerts, acknowledge_alert, resolve_alert
 from .services.forecasting_service import get_demand_forecasts
 from .services.emergency_service import apply_emergency_event, notifier, TRAVEL_TIME_DISRUPTIONS
 from .services.manifest_service import generate_transfer_manifest_data
@@ -275,6 +275,10 @@ def get_facilities(is_connected: Optional[bool] = None, db: Session = Depends(ge
             "pincode": f.pincode,
             "contact_phone": f.contact_phone,
             "contact_email": f.contact_email,
+            "source_url": f.source_url,
+            "date_verified": f.date_verified,
+            "verification_status": f.verification_status,
+            "is_connected": f.is_connected,
             "safety_reserve_units": f.safety_reserve_units,
             "is_active": f.is_active,
             "is_connected": f.is_connected,
@@ -815,9 +819,19 @@ def trigger_expiry_check(db: Session = Depends(get_db)):
 def ack_alert_endpoint(alert_id: int, db: Session = Depends(get_db)):
     try:
         updated = acknowledge_alert(db, alert_id)
-        return {"status": "success", "alert_id": updated.id}
+        return {"status": "success", "alert_id": updated.id, "alert_status": updated.status}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/alerts/{alert_id}/resolve")
+def resolve_alert_endpoint(alert_id: int, payload: Optional[Dict[str, str]] = None, db: Session = Depends(get_db)):
+    try:
+        notes = (payload or {}).get("notes", "Resolved by authorized healthcare operator")
+        updated = resolve_alert(db, alert_id, resolution_notes=notes)
+        return {"status": "success", "alert_id": updated.id, "alert_status": updated.status}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 
 
 # ==========================================
@@ -1008,17 +1022,799 @@ def get_latest_optimization():
         return {"status": "no_previous_run", "message": "No optimization run recorded yet. Click 'Execute MILP Optimization'."}
     return LATEST_OPTIMIZATION_RESULT
 
-@app.get("/api/forecasts")
-def get_forecasts_endpoint(
-    facility_id: Optional[int] = None,
-    component_type: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    return get_demand_forecasts(db, facility_id=facility_id, component_type=component_type)
+
+# ==========================================
+# 8. TRANSFERS WORKFLOW
+# ==========================================
+@app.get("/api/transfers", response_model=List[TransferOut])
+def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(Transfer)
+    if status:
+        q = q.filter(Transfer.status == status)
+    transfers = q.order_by(Transfer.created_at.desc()).all()
+
+    res = []
+    for tx in transfers:
+        res.append(TransferOut(
+            id=tx.id,
+            transfer_id=tx.transfer_id,
+            emergency_request_id=tx.emergency_request_id,
+            origin_facility_id=tx.origin_facility_id,
+            origin_name=tx.origin.name if tx.origin else None,
+            destination_facility_id=tx.destination_facility_id,
+            destination_name=tx.destination.name if tx.destination else None,
+            inventory_item_id=tx.inventory_item_id,
+            tracking_id=tx.inventory_item.tracking_id if tx.inventory_item else None,
+            component_type=tx.component_type,
+            blood_group=tx.blood_group,
+            quantity=tx.quantity,
+            travel_time_minutes=tx.travel_time_minutes,
+            distance_km=tx.distance_km,
+            status=tx.status,
+            cancellation_reason=tx.cancellation_reason,
+            optimization_run_id=tx.optimization_run_id,
+            rationale=tx.rationale,
+            driver_id=tx.driver_id,
+            driver_name=tx.driver.name if tx.driver else None,
+            driver_status=tx.driver_status or "unassigned",
+            temperature_current_c=tx.temperature_current_c or 4.0,
+            temperature_status=tx.temperature_status or "normal",
+            eta_minutes=tx.eta_minutes,
+            created_at=tx.created_at,
+            approved_at=tx.approved_at,
+            dispatched_at=tx.dispatched_at,
+            received_at=tx.received_at
+        ))
+    return res
+
+@app.post("/api/transfers/{transfer_id}/approve")
+def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    if tx.status != "proposed":
+        raise HTTPException(status_code=400, detail=f"Cannot approve transfer with status '{tx.status}'")
+
+    # Read latest inventory atomically from DB
+    item = tx.inventory_item
+    if not item or item.status != "available":
+        raise HTTPException(status_code=400, detail="Underlying inventory batch is no longer available or has been reserved.")
+
+    # Check authorized quantity (supports partial acceptance by supplying facility)
+    approved_qty = (payload or {}).get("authorized_quantity", tx.quantity)
+    if approved_qty <= 0 or approved_qty > item.quantity:
+        raise HTTPException(status_code=400, detail=f"Invalid authorized quantity: {approved_qty}. Available in batch: {item.quantity}")
+
+    # Atomic Reservation
+    tx.quantity = approved_qty
+    tx.status = "approved"
+    tx.approved_at = datetime.utcnow()
+    item.status = "reserved"
+
+    # Auto-assign available driver for logistics readiness
+    avail_driver = db.query(Driver).filter(Driver.status == "available").first() or db.query(Driver).first()
+    if avail_driver:
+        tx.driver_id = avail_driver.id
+        tx.driver_status = "assigned"
+
+    # Update emergency request tracking if attached
+    reopt_transfers = []
+    if tx.emergency_request:
+        tx.emergency_request.quantity_allocated += approved_qty
+        if tx.emergency_request.quantity_allocated >= tx.emergency_request.quantity_needed:
+            tx.emergency_request.status = "fully_approved"
+        else:
+            tx.emergency_request.status = "partially_approved"
+            rem_needed = tx.emergency_request.quantity_needed - tx.emergency_request.quantity_allocated
+            
+            # Re-optimize remaining shortage across other connected facilities
+            facilities_input = [
+                {"id": f.id, "name": f.name, "safety_reserve_units": f.safety_reserve_units if f.is_active else 99999}
+                for f in db.query(Facility).all()
+            ]
+            inventory_input = [
+                {
+                    "id": it.id,
+                    "tracking_id": it.tracking_id,
+                    "facility_id": it.facility_id,
+                    "blood_group": it.blood_group,
+                    "component_type": it.component_type,
+                    "quantity": it.quantity,
+                    "status": it.status,
+                    "expiry_date": it.expiry_date
+                }
+                for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()
+            ]
+            demands_input = [
+                {
+                    "id": tx.emergency_request.id,
+                    "facility_id": tx.emergency_request.requesting_facility_id,
+                    "blood_group": tx.emergency_request.blood_group,
+                    "component_type": tx.emergency_request.component_type,
+                    "quantity_needed": rem_needed,
+                    "urgency": tx.emergency_request.urgency,
+                    "deadline_hours": 24.0,
+                    "status": "partially_fulfilled"
+                }
+            ]
+            travel_matrix = dict(TRAVEL_TIME_MATRIX)
+            travel_matrix.update(TRAVEL_TIME_DISRUPTIONS)
+
+            opt = MILPOptimizer(
+                facilities=facilities_input,
+                inventory=inventory_input,
+                demands=demands_input,
+                travel_time_matrix=travel_matrix,
+                now=datetime.utcnow()
+            )
+            sol = opt.solve()
+            if sol.get("is_feasible") and sol.get("proposed_transfers"):
+                for prop in sol["proposed_transfers"]:
+                    if prop["destination_id"] == tx.destination_facility_id and prop["item_id"] != item.id:
+                        new_tx = Transfer(
+                            transfer_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
+                            emergency_request_id=tx.emergency_request.id,
+                            origin_facility_id=prop["origin_id"],
+                            destination_facility_id=prop["destination_id"],
+                            inventory_item_id=prop["item_id"],
+                            component_type=prop["component_type"],
+                            blood_group=prop["blood_group"],
+                            quantity=prop["quantity"],
+                            travel_time_minutes=prop["travel_time_minutes"],
+                            distance_km=round(prop["travel_time_minutes"] * 0.75, 1),
+                            status="proposed",
+                            optimization_run_id=sol["run_id"],
+                            rationale=f"Reallocated remaining {prop['quantity']} units for {tx.emergency_request.request_id} from {prop['origin_name']}. {prop['explanation']}",
+                            created_at=datetime.utcnow()
+                        )
+                        db.add(new_tx)
+                        reopt_transfers.append(new_tx.transfer_id)
+                        
+                        # Notify the secondary supplying blood bank
+                        sec_alert = Alert(
+                            facility_id=prop["origin_id"],
+                            inventory_item_id=prop["item_id"],
+                            alert_type="transfer_proposal",
+                            severity="urgent",
+                            message=f"ACTION REQUIRED: Reallocation proposal for {prop['quantity']} units ({prop['blood_group']} {prop['component_type']}) for emergency requisition {tx.emergency_request.request_id}.",
+                            status="active",
+                            email_delivery_status="In-App Notification & SMS Alert Dispatched"
+                        )
+                        db.add(sec_alert)
+
+    # Movement event
+    record_movement_event(
+        db=db,
+        inventory_item_id=item.id,
+        event_type="transfer_approved_reserved",
+        facility_name=tx.origin.name if tx.origin else "Origin",
+        details=f"Transfer {tx.transfer_id} approved for {approved_qty} units. Stock atomically reserved. Driver {avail_driver.name if avail_driver else 'assigned'} notified for dispatch."
+    )
+
+    # Clean up or resolve the proposal alert for this facility
+    alert = db.query(Alert).filter(
+        Alert.facility_id == tx.origin_facility_id,
+        Alert.inventory_item_id == item.id,
+        Alert.alert_type == "transfer_proposal",
+        Alert.status == "active"
+    ).first()
+    if alert:
+        alert.status = "resolved"
+
+    db.commit()
+    return {
+        "status": "success",
+        "transfer_id": tx.transfer_id,
+        "new_status": "approved",
+        "reserved_quantity": approved_qty,
+        "driver_assigned": avail_driver.name if avail_driver else None,
+        "reallocated_transfers": reopt_transfers
+    }
+
+@app.post("/api/transfers/{transfer_id}/reject")
+def reject_transfer(transfer_id: str, payload: Optional[Dict[str, str]] = None, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    if tx.status != "proposed":
+        raise HTTPException(status_code=400, detail=f"Cannot reject transfer with status '{tx.status}'")
+
+    reason = (payload or {}).get("reason", "Supplying facility declined transfer proposal due to local clinical reserves.")
+    tx.status = "rejected"
+    tx.cancellation_reason = reason
+
+    # Clean up alert
+    alert = db.query(Alert).filter(
+        Alert.facility_id == tx.origin_facility_id,
+        Alert.inventory_item_id == tx.inventory_item_id,
+        Alert.alert_type == "transfer_proposal",
+        Alert.status == "active"
+    ).first()
+    if alert:
+        alert.status = "resolved"
+
+    # If linked to emergency request, re-optimize the demand from another facility
+    reopt_transfers = []
+    if tx.emergency_request and tx.emergency_request.quantity_allocated < tx.emergency_request.quantity_needed:
+        rem_needed = tx.emergency_request.quantity_needed - tx.emergency_request.quantity_allocated
+        facilities_input = [
+            {"id": f.id, "name": f.name, "safety_reserve_units": f.safety_reserve_units if f.is_active else 99999}
+            for f in db.query(Facility).all()
+        ]
+        inventory_input = [
+            {
+                "id": it.id,
+                "tracking_id": it.tracking_id,
+                "facility_id": it.facility_id,
+                "blood_group": it.blood_group,
+                "component_type": it.component_type,
+                "quantity": it.quantity,
+                "status": it.status,
+                "expiry_date": it.expiry_date
+            }
+            for it in db.query(InventoryItem).filter(InventoryItem.status == "available", InventoryItem.facility_id != tx.origin_facility_id).all()
+        ]
+        demands_input = [
+            {
+                "id": tx.emergency_request.id,
+                "facility_id": tx.emergency_request.requesting_facility_id,
+                "blood_group": tx.emergency_request.blood_group,
+                "component_type": tx.emergency_request.component_type,
+                "quantity_needed": rem_needed,
+                "urgency": tx.emergency_request.urgency,
+                "deadline_hours": 24.0,
+                "status": "unmet"
+            }
+        ]
+        travel_matrix = dict(TRAVEL_TIME_MATRIX)
+        travel_matrix.update(TRAVEL_TIME_DISRUPTIONS)
+
+        opt = MILPOptimizer(
+            facilities=facilities_input,
+            inventory=inventory_input,
+            demands=demands_input,
+            travel_time_matrix=travel_matrix,
+            now=datetime.utcnow()
+        )
+        sol = opt.solve()
+        if sol.get("is_feasible") and sol.get("proposed_transfers"):
+            for prop in sol["proposed_transfers"]:
+                if prop["destination_id"] == tx.destination_facility_id:
+                    new_tx = Transfer(
+                        transfer_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
+                        emergency_request_id=tx.emergency_request.id,
+                        origin_facility_id=prop["origin_id"],
+                        destination_facility_id=prop["destination_id"],
+                        inventory_item_id=prop["item_id"],
+                        component_type=prop["component_type"],
+                        blood_group=prop["blood_group"],
+                        quantity=prop["quantity"],
+                        travel_time_minutes=prop["travel_time_minutes"],
+                        distance_km=round(prop["travel_time_minutes"] * 0.75, 1),
+                        status="proposed",
+                        optimization_run_id=sol["run_id"],
+                        rationale=f"Reallocated {prop['quantity']} units after {tx.origin.name if tx.origin else 'Facility'} rejected. {prop['explanation']}",
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(new_tx)
+                    reopt_transfers.append(new_tx.transfer_id)
+                    sec_alert = Alert(
+                        facility_id=prop["origin_id"],
+                        inventory_item_id=prop["item_id"],
+                        alert_type="transfer_proposal",
+                        severity="urgent",
+                        message=f"ACTION REQUIRED: Reallocation proposal for {prop['quantity']} units ({prop['blood_group']} {prop['component_type']}) following rejection.",
+                        status="active",
+                        email_delivery_status="In-App Notification & SMS Alert Dispatched"
+                    )
+                    db.add(sec_alert)
+
+    # Log audit
+    db.add(AuditLog(
+        action="TRANSFER_PROPOSAL_REJECTED",
+        actor=tx.origin.name if tx.origin else "Blood Bank Officer",
+        entity_type="Transfer",
+        entity_id=tx.transfer_id,
+        details=f"Transfer proposal {tx.transfer_id} rejected. Reason: {reason}"
+    ))
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": "rejected", "reason": reason, "reallocated_transfers": reopt_transfers}
+
+@app.post("/api/transfers/{transfer_id}/dispatch")
+def dispatch_transfer(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    if tx.status != "approved":
+        raise HTTPException(status_code=400, detail=f"Cannot dispatch transfer with status '{tx.status}'")
+
+    item = tx.inventory_item
+    tx.status = "dispatched"
+    tx.dispatched_at = datetime.utcnow()
+    if item:
+        item.status = "in_transit"
+
+    record_movement_event(
+        db=db,
+        inventory_item_id=item.id,
+        event_type="dispatched",
+        facility_name=tx.origin.name if tx.origin else "Origin",
+        details=f"Cold chain container dispatched via courier. Estimated arrival in {int(tx.travel_time_minutes)} mins."
+    )
+
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": "dispatched"}
+
+@app.post("/api/transfers/{transfer_id}/receive")
+def receive_transfer(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    if tx.status != "dispatched":
+        raise HTTPException(status_code=400, detail=f"Cannot receive transfer with status '{tx.status}'")
+
+    item = tx.inventory_item
+    tx.status = "received"
+    tx.received_at = datetime.utcnow()
+    
+    if item:
+        item.status = "available"
+        item.facility_id = tx.destination_facility_id  # Transferred to destination!
+
+    # Fulfill destination demand if exists
+    matched_demand = db.query(DemandRecord).filter(
+        DemandRecord.facility_id == tx.destination_facility_id,
+        DemandRecord.component_type == tx.component_type,
+        DemandRecord.status.in_(["unmet", "partially_fulfilled"])
+    ).first()
+    if matched_demand:
+        if matched_demand.quantity_needed <= tx.quantity:
+            matched_demand.status = "fulfilled"
+            matched_demand.quantity_needed = 0
+        else:
+            matched_demand.quantity_needed -= tx.quantity
+            matched_demand.status = "partially_fulfilled"
+
+    record_movement_event(
+        db=db,
+        inventory_item_id=item.id,
+        event_type="received_reconciled",
+        facility_name=tx.destination.name if tx.destination else "Destination",
+        details=f"Consignment received and stock reconciled into destination inventory."
+    )
+
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": "received"}
+
+@app.post("/api/transfers/{transfer_id}/cancel")
+def cancel_transfer(transfer_id: str, reason: str = "Operator cancelled", db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    if tx.status in ["received", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel transfer in '{tx.status}' state")
+
+    item = tx.inventory_item
+    tx.status = "cancelled"
+    tx.cancellation_reason = reason
+    if item and item.status in ["reserved", "in_transit"]:
+        item.status = "available"
+
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": "cancelled"}
+
+@app.get("/api/transfers/{transfer_id}/manifest")
+def get_manifest(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    return generate_transfer_manifest_data(tx)
 
 
 # ==========================================
-# 11. EMERGENCY SIMULATOR & WEBSOCKETS
+# 8.1 AUTH & DEMO PERSONA SWITCHER
+# ==========================================
+@app.get("/api/auth/demo-users", response_model=List[UserOut])
+def get_demo_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    res = []
+    for u in users:
+        res.append(UserOut(
+            id=u.id,
+            email=u.email,
+            name=u.name,
+            role=u.role,
+            facility_id=u.facility_id,
+            facility_name=u.facility.name if u.facility else None,
+            phone=u.phone,
+            is_active=u.is_active
+        ))
+    return res
+
+@app.get("/api/auth/current-user")
+def get_current_user_profile(user_id: Optional[int] = 1, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.id == user_id).first() or db.query(User).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": u.id,
+        "email": u.email,
+        "name": u.name,
+        "role": u.role,
+        "facility_id": u.facility_id,
+        "facility_name": u.facility.name if u.facility else "Central Logistics Admin",
+        "phone": u.phone
+    }
+
+
+# ==========================================
+# 8.2 EMERGENCY BLOOD REQUESTS & CANDIDATE MATCHING
+# ==========================================
+@app.get("/api/emergency-requests", response_model=List[EmergencyRequestOut])
+def get_emergency_requests(facility_id: Optional[int] = None, db: Session = Depends(get_db)):
+    q = db.query(EmergencyRequest)
+    if facility_id:
+        q = q.filter(EmergencyRequest.requesting_facility_id == facility_id)
+    reqs = q.order_by(EmergencyRequest.created_at.desc()).all()
+    res = []
+    for r in reqs:
+        res.append(EmergencyRequestOut(
+            id=r.id,
+            request_id=r.request_id,
+            requesting_facility_id=r.requesting_facility_id,
+            requesting_facility_name=r.facility.name if r.facility else None,
+            blood_group=r.blood_group,
+            component_type=r.component_type,
+            quantity_needed=r.quantity_needed,
+            quantity_allocated=r.quantity_allocated or 0,
+            quantity_fulfilled=r.quantity_fulfilled or 0,
+            urgency=r.urgency,
+            required_by_time=r.required_by_time,
+            delivery_destination=r.delivery_destination,
+            contact_phone=r.contact_phone,
+            notes=r.notes,
+            status=r.status,
+            created_at=r.created_at,
+            updated_at=r.updated_at
+        ))
+    return res
+
+@app.post("/api/emergency-requests")
+def create_emergency_request(req_in: EmergencyRequestCreate, db: Session = Depends(get_db)):
+    rid = f"REQ-STAT-{uuid.uuid4().hex[:6].upper()}"
+    req_by = datetime.utcnow() + timedelta(hours=req_in.required_by_hours)
+    dest = req_in.delivery_destination
+    if not dest:
+        fac = db.query(Facility).filter(Facility.id == req_in.requesting_facility_id).first()
+        dest = fac.name if fac else "Hospital Emergency Ward"
+
+    em_req = EmergencyRequest(
+        request_id=rid,
+        requesting_facility_id=req_in.requesting_facility_id,
+        blood_group=req_in.blood_group,
+        component_type=req_in.component_type,
+        quantity_needed=req_in.quantity_needed,
+        quantity_allocated=0,
+        quantity_fulfilled=0,
+        urgency=req_in.urgency,
+        required_by_time=req_by,
+        delivery_destination=dest,
+        contact_phone=req_in.contact_phone or "+91 253 257 2038",
+        notes=req_in.notes or "STAT Emergency Demand submitted via Hospital Portal.",
+        status="submitted"
+    )
+    db.add(em_req)
+
+    # Also register in DemandRecords for solver awareness
+    demand_rec = DemandRecord(
+        facility_id=req_in.requesting_facility_id,
+        blood_group=req_in.blood_group,
+        component_type=req_in.component_type,
+        quantity_needed=req_in.quantity_needed,
+        urgency=req_in.urgency,
+        deadline_hours=req_in.required_by_hours,
+        status="unmet",
+        is_simulated=False
+    )
+    db.add(demand_rec)
+
+    # Log audit
+    db.add(AuditLog(
+        action="EMERGENCY_REQUEST_CREATED",
+        actor=f"Hospital Staff (Facility {req_in.requesting_facility_id})",
+        entity_type="EmergencyRequest",
+        entity_id=rid,
+        details=f"STAT request {rid} submitted for {req_in.quantity_needed} units of {req_in.blood_group} {req_in.component_type}."
+    ))
+    db.commit()
+
+    # Discover candidate facilities immediately using immunohematology compatibility rules
+    candidates = []
+    # Query all available, unexpired stock from other connected, active facilities
+    all_avail_items = db.query(InventoryItem).join(Facility).filter(
+        InventoryItem.status == "available",
+        InventoryItem.facility_id != req_in.requesting_facility_id,
+        Facility.is_active == True,
+        Facility.is_connected == True
+    ).all()
+
+    eligible_items = []
+    for it in all_avail_items:
+        if it.component_type != req_in.component_type:
+            continue
+        if not is_compatible(req_in.component_type, it.blood_group, req_in.blood_group):
+            continue
+        
+        # Check expiry (> 1 hour)
+        hrs_left = (it.expiry_date - datetime.utcnow()).total_seconds() / 3600.0
+        if hrs_left <= 1.0:
+            continue
+
+        eligible_items.append(it)
+        t_time = TRAVEL_TIME_MATRIX.get((it.facility_id, req_in.requesting_facility_id), 18.0)
+        candidates.append({
+            "facility_id": it.facility_id,
+            "facility_name": it.facility.name,
+            "available_units": it.quantity,
+            "blood_group": it.blood_group,
+            "batch_ref": it.batch_ref,
+            "travel_time_minutes": t_time,
+            "is_connected": it.facility.is_connected
+        })
+
+    # Automatically trigger MILP optimization to generate candidate proposal transfers!
+    proposed_transfers_list = []
+    if eligible_items:
+        facilities_input = [
+            {"id": f.id, "name": f.name, "safety_reserve_units": f.safety_reserve_units if f.is_active else 99999}
+            for f in db.query(Facility).all()
+        ]
+        inventory_input = [
+            {
+                "id": it.id,
+                "tracking_id": it.tracking_id,
+                "facility_id": it.facility_id,
+                "blood_group": it.blood_group,
+                "component_type": it.component_type,
+                "quantity": it.quantity,
+                "status": it.status,
+                "expiry_date": it.expiry_date
+            }
+            for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()
+        ]
+        demands_input = [
+            {
+                "id": dm.id,
+                "facility_id": dm.facility_id,
+                "blood_group": dm.blood_group,
+                "component_type": dm.component_type,
+                "quantity_needed": dm.quantity_needed,
+                "urgency": dm.urgency,
+                "deadline_hours": dm.deadline_hours,
+                "status": dm.status
+            }
+            for dm in db.query(DemandRecord).filter(DemandRecord.status.in_(["unmet", "partially_fulfilled"])).all()
+        ]
+        travel_matrix = dict(TRAVEL_TIME_MATRIX)
+        travel_matrix.update(TRAVEL_TIME_DISRUPTIONS)
+
+        opt = MILPOptimizer(
+            facilities=facilities_input,
+            inventory=inventory_input,
+            demands=demands_input,
+            travel_time_matrix=travel_matrix,
+            now=datetime.utcnow()
+        )
+        sol = opt.solve()
+
+        if sol.get("is_feasible") and sol.get("proposed_transfers"):
+            run_id = sol["run_id"]
+            em_req.status = "proposed"
+            for prop in sol["proposed_transfers"]:
+                if prop["destination_id"] == req_in.requesting_facility_id:
+                    tx = Transfer(
+                        transfer_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
+                        emergency_request_id=em_req.id,
+                        origin_facility_id=prop["origin_id"],
+                        destination_facility_id=prop["destination_id"],
+                        inventory_item_id=prop["item_id"],
+                        component_type=prop["component_type"],
+                        blood_group=prop["blood_group"],
+                        quantity=prop["quantity"],
+                        travel_time_minutes=prop["travel_time_minutes"],
+                        distance_km=round(prop["travel_time_minutes"] * 0.75, 1),
+                        status="proposed",
+                        optimization_run_id=run_id,
+                        rationale=prop["explanation"],
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(tx)
+                    proposed_transfers_list.append({
+                        "transfer_id": tx.transfer_id,
+                        "origin_name": prop["origin_name"],
+                        "quantity": prop["quantity"],
+                        "blood_group": prop["blood_group"],
+                        "explanation": prop["explanation"]
+                    })
+
+                    # Create persistent in-app Alert / Notification for Supplying Facility!
+                    supplying_alert = Alert(
+                        facility_id=prop["origin_id"],
+                        inventory_item_id=prop["item_id"],
+                        alert_type="transfer_proposal",
+                        severity="urgent" if req_in.urgency != "critical" else "critical",
+                        message=f"ACTION REQUIRED: Proposed transfer of {prop['quantity']} units ({prop['blood_group']} {prop['component_type']}) for emergency at {dest}. Review and Accept/Reject.",
+                        hours_remaining=None,
+                        status="active",
+                        email_delivery_status="In-App Notification & SMS Alert Dispatched"
+                    )
+                    db.add(supplying_alert)
+            db.commit()
+
+    return {
+        "status": "success",
+        "request_id": rid,
+        "message": f"STAT Blood Requisition created. Identified {len(candidates)} compatible supply source(s). Generated {len(proposed_transfers_list)} proposed transfer allocation(s).",
+        "candidates": candidates,
+        "proposed_transfers": proposed_transfers_list
+    }
+
+
+# ==========================================
+# 8.3 DRIVER DISPATCH & SMARTPHONE PORTAL
+# ==========================================
+@app.get("/api/drivers", response_model=List[DriverOut])
+def get_drivers(db: Session = Depends(get_db)):
+    drivers = db.query(Driver).all()
+    return drivers
+
+@app.post("/api/transfers/{transfer_id}/assign-driver")
+def assign_driver_to_transfer(transfer_id: str, driver_id: Optional[int] = None, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+
+    driver = None
+    if driver_id:
+        driver = db.query(Driver).filter(Driver.id == driver_id).first()
+    if not driver:
+        # Auto-pick available driver
+        driver = db.query(Driver).filter(Driver.status == "available").first()
+    if not driver:
+        driver = db.query(Driver).first()
+
+    if not driver:
+        raise HTTPException(status_code=400, detail="No courier drivers available in the network.")
+
+    tx.driver_id = driver.id
+    tx.driver_status = "assigned"
+    driver.status = "on_mission"
+
+    # Add audit log
+    db.add(AuditLog(
+        action="DRIVER_ASSIGNED",
+        actor="Dispatch Coordinator",
+        entity_type="Transfer",
+        entity_id=tx.transfer_id,
+        details=f"Driver {driver.name} ({driver.vehicle_number}) assigned to consignment {tx.transfer_id}."
+    ))
+    db.commit()
+    return {
+        "status": "success",
+        "transfer_id": tx.transfer_id,
+        "driver_id": driver.id,
+        "driver_name": driver.name,
+        "driver_status": "assigned"
+    }
+
+@app.post("/api/transfers/{transfer_id}/driver-action")
+def update_driver_status(transfer_id: str, action: str, db: Session = Depends(get_db)):
+    """
+    Driver workflow actions:
+    - 'accept': Driver confirms mission
+    - 'pickup': Driver confirms pickup from supplying blood bank
+    - 'deliver': Driver delivers cold box to destination hospital
+    """
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+
+    if action == "accept":
+        tx.driver_status = "accepted"
+    elif action == "pickup":
+        tx.driver_status = "in_transit"
+        tx.status = "dispatched"
+        tx.dispatched_at = datetime.utcnow()
+        if tx.inventory_item:
+            tx.inventory_item.status = "in_transit"
+        record_movement_event(
+            db=db,
+            inventory_item_id=tx.inventory_item_id,
+            event_type="driver_pickup_confirmed",
+            facility_name=tx.origin.name if tx.origin else "Blood Bank",
+            details=f"Courier {tx.driver.name if tx.driver else 'Courier'} picked up cold box ({tx.temperature_current_c}°C)."
+        )
+    elif action == "deliver":
+        tx.driver_status = "delivered"
+        tx.status = "received"
+        tx.received_at = datetime.utcnow()
+        if tx.driver:
+            tx.driver.status = "available"
+        if tx.inventory_item:
+            tx.inventory_item.status = "available"
+            tx.inventory_item.facility_id = tx.destination_facility_id
+
+        # Update emergency request fulfillment if linked
+        if tx.emergency_request:
+            tx.emergency_request.quantity_fulfilled += tx.quantity
+            if tx.emergency_request.quantity_fulfilled >= tx.emergency_request.quantity_needed:
+                tx.emergency_request.status = "completed"
+
+        record_movement_event(
+            db=db,
+            inventory_item_id=tx.inventory_item_id,
+            event_type="delivered_and_reconciled",
+            facility_name=tx.destination.name if tx.destination else "Hospital",
+            details=f"Courier delivered cold box to destination. Stock reconciled into receiving facility."
+        )
+
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "driver_status": tx.driver_status, "transfer_status": tx.status}
+
+
+# ==========================================
+# 8.4 COLD-CHAIN IOT TEMPERATURE SIMULATOR
+# ==========================================
+@app.post("/api/transfers/{transfer_id}/simulate-temperature-spike")
+def simulate_temp_spike(transfer_id: str, spike_temp: float = 11.5, db: Session = Depends(get_db)):
+    """
+    Hackathon Judge Trigger: Injects a cold-chain temperature excursion (+11.5°C)
+    generating immediate critical alerts and sound sirens.
+    """
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+
+    tx.temperature_current_c = spike_temp
+    tx.temperature_status = "critical_excursion"
+
+    # Log temperature log
+    log = TemperatureLog(
+        transfer_id=tx.id,
+        temperature_c=spike_temp,
+        sensor_id="IOT-COLD-NASHIK-EXCURSION",
+        is_simulated=True,
+        status="critical_excursion",
+        notes=f"CRITICAL COLD-CHAIN BREACH: Temperature reached {spike_temp}°C (Safe limit: 2°C - 6°C)."
+    )
+    db.add(log)
+
+    # Create critical alert
+    alert = Alert(
+        facility_id=tx.destination_facility_id,
+        inventory_item_id=tx.inventory_item_id,
+        alert_type="temp_excursion",
+        severity="critical",
+        message=f"CRITICAL COLD-CHAIN EXCURSION on Consignment {tx.transfer_id}: Current sensor reading is {spike_temp}°C! Immediate thermal inspection required.",
+        status="active",
+        email_delivery_status="Emergency Audio Alert & SMS Dispatched to Quality Officer"
+    )
+    db.add(alert)
+    db.commit()
+
+    return {
+        "status": "success",
+        "transfer_id": tx.transfer_id,
+        "temperature_c": spike_temp,
+        "temperature_status": "critical_excursion",
+        "alert_id": alert.id,
+        "message": f"Simulated temperature excursion to {spike_temp}°C logged. Excursion alarm triggered."
+    }
+
+
+
+# ==========================================
+# 9. LIVE EMERGENCY SIMULATION & WEBSOCKET
 # ==========================================
 @app.websocket("/ws/scenarios/{scenario_id}")
 async def websocket_scenario_endpoint(websocket: WebSocket, scenario_id: str):

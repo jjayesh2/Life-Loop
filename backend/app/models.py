@@ -26,16 +26,20 @@ class Facility(Base):
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String(50), unique=True, index=True)
     name = Column(String(150), nullable=False)
-    facility_type = Column(String(50), nullable=False)  # Hospital, Blood Bank, Trauma Center, Clinic
+    facility_type = Column(String(50), nullable=False)  # Hospital, Blood Bank, Regional Center
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     address = Column(String(255), nullable=False)
     city = Column(String(100), default="Nashik")
     district = Column(String(100), default="Nashik")
     state = Column(String(100), default="Maharashtra")
-    pincode = Column(String(20), default="422001")
+    pincode = Column(String(20), nullable=True)
     contact_phone = Column(String(50), nullable=True)
     contact_email = Column(String(100), nullable=True)
+    source_url = Column(String(255), nullable=True)
+    date_verified = Column(String(50), nullable=True)
+    verification_status = Column(String(50), default="Verified Public Directory")
+    is_connected = Column(Boolean, default=True)  # True = Life-Loop Connected, False = Public listing only
     is_active = Column(Boolean, default=True)
     is_connected = Column(Boolean, default=True)  # True = connected to Life-Loop; False = public directory listing
     verification_status = Column(String(50), default="Connected Demo Facility")  # Connected Demo Facility, Public listing, Live verified
@@ -47,6 +51,42 @@ class Facility(Base):
     demands = relationship("DemandRecord", back_populates="facility")
     emergency_requests = relationship("EmergencyBloodRequest", back_populates="hospital")
     alerts = relationship("Alert", back_populates="facility")
+    users = relationship("User", back_populates="facility")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(150), nullable=False)
+    role = Column(String(50), nullable=False)  # admin, hospital_staff, blood_bank_officer, driver
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
+    phone = Column(String(50), nullable=True)
+    password_hash = Column(String(255), default="demo_pbkdf2_hash")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    facility = relationship("Facility", back_populates="users")
+    driver_profile = relationship("Driver", back_populates="user", uselist=False)
+
+
+class Driver(Base):
+    __tablename__ = "drivers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    name = Column(String(150), nullable=False)
+    phone = Column(String(50), nullable=False)
+    vehicle_type = Column(String(50), default="Cold-Van")  # Cold-Van, Two-Wheeler Medical Box, Ambulance
+    vehicle_number = Column(String(50), default="MH-15-BL-1001")
+    current_lat = Column(Float, default=19.9975)
+    current_lng = Column(Float, default=73.7898)
+    status = Column(String(30), default="available")  # available, on_mission, off_duty
+    is_active = Column(Boolean, default=True)
+
+    user = relationship("User", back_populates="driver_profile")
+    assignments = relationship("Transfer", back_populates="driver")
 
 
 class Driver(Base):
@@ -89,6 +129,31 @@ class InventoryItem(Base):
 
     facility = relationship("Facility", back_populates="inventory_items")
     traceability_events = relationship("TraceabilityEvent", back_populates="inventory_item", cascade="all, delete-orphan")
+    transfers = relationship("Transfer", back_populates="inventory_item")
+
+
+class EmergencyRequest(Base):
+    __tablename__ = "emergency_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(64), unique=True, index=True, nullable=False)
+    requesting_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    blood_group = Column(String(10), nullable=False)
+    component_type = Column(String(50), nullable=False)
+    quantity_needed = Column(Integer, nullable=False)
+    quantity_allocated = Column(Integer, default=0)
+    quantity_fulfilled = Column(Integer, default=0)
+    urgency = Column(String(20), default="critical")  # critical, urgent, routine
+    required_by_time = Column(DateTime, nullable=True)
+    delivery_destination = Column(String(255), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String(30), default="submitted")  # submitted, proposed, partially_approved, fully_approved, in_transit, completed, cancelled, unmet
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    facility = relationship("Facility")
+    transfers = relationship("Transfer", back_populates="emergency_request")
 
 
 class EmergencyBloodRequest(Base):
@@ -136,7 +201,7 @@ class Transfer(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     transfer_id = Column(String(64), unique=True, index=True, nullable=False)
-    request_id = Column(String(64), ForeignKey("emergency_blood_requests.request_id"), nullable=True)
+    emergency_request_id = Column(Integer, ForeignKey("emergency_requests.id"), nullable=True)
     origin_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
     destination_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
     inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=False)
@@ -146,13 +211,8 @@ class Transfer(Base):
     blood_group = Column(String(10), nullable=False)
     quantity = Column(Integer, nullable=False)
     travel_time_minutes = Column(Float, nullable=False)
-    distance_km = Column(Float, default=5.0)
-    eta_minutes = Column(Float, nullable=True)
-    eta_type = Column(String(30), default="calculated")  # calculated, traffic_aware, simulated
-
-    # Workflow status:
-    # proposed -> awaiting_approval -> approved -> driver_assigned -> dispatched -> delivered -> reconciled (or cancelled/rejected)
-    status = Column(String(30), default="proposed")
+    distance_km = Column(Float, default=15.0)
+    status = Column(String(30), default="proposed")  # proposed, approved, reserved, ready_for_pickup, dispatched, in_transit, received, cancelled, rejected
     cancellation_reason = Column(String(255), nullable=True)
     driver_status = Column(String(30), default="unassigned")  # unassigned, offered, accepted, declined
     driver_decline_reason = Column(String(255), nullable=True)
@@ -166,6 +226,14 @@ class Transfer(Base):
 
     optimization_run_id = Column(String(64), nullable=True, index=True)
     rationale = Column(Text, nullable=True)
+
+    # Driver & Logistics
+    driver_id = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_status = Column(String(30), default="unassigned")  # unassigned, assigned, accepted, en_route_pickup, picked_up, in_transit, delivered
+    temperature_current_c = Column(Float, default=4.0)
+    temperature_status = Column(String(20), default="normal")  # normal, warning, critical_excursion
+    eta_minutes = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     approved_at = Column(DateTime, nullable=True)
     driver_assigned_at = Column(DateTime, nullable=True)
@@ -175,9 +243,25 @@ class Transfer(Base):
 
     origin = relationship("Facility", foreign_keys=[origin_facility_id])
     destination = relationship("Facility", foreign_keys=[destination_facility_id])
-    inventory_item = relationship("InventoryItem")
-    driver = relationship("Driver", back_populates="transfers")
-    emergency_request = relationship("EmergencyBloodRequest", back_populates="transfers")
+    inventory_item = relationship("InventoryItem", back_populates="transfers")
+    emergency_request = relationship("EmergencyRequest", back_populates="transfers")
+    driver = relationship("Driver", back_populates="assignments")
+    temperature_logs = relationship("TemperatureLog", back_populates="transfer", cascade="all, delete-orphan")
+
+
+class TemperatureLog(Base):
+    __tablename__ = "temperature_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_id = Column(Integer, ForeignKey("transfers.id"), nullable=False)
+    temperature_c = Column(Float, nullable=False)
+    sensor_id = Column(String(50), default="IOT-COLD-NASHIK-01")
+    is_simulated = Column(Boolean, default=True)
+    status = Column(String(20), default="normal")  # normal, warning, excursion
+    notes = Column(String(255), nullable=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    transfer = relationship("Transfer", back_populates="temperature_logs")
 
 
 class Alert(Base):
@@ -186,14 +270,12 @@ class Alert(Base):
     id = Column(Integer, primary_key=True, index=True)
     facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
     inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=True)
-    transfer_id = Column(String(64), nullable=True)
-    alert_type = Column(String(50), nullable=False)  # emergency_request, approaching_expiry, urgent_expiry, expired, shortage_risk, temperature_deviation, shipment_delay
-    severity = Column(String(20), nullable=False)  # critical, urgent, warning, info
+    alert_type = Column(String(50), nullable=False)  # approaching_expiry, urgent_expiry, expired, shortage_risk, temp_excursion, transfer_delay
+    severity = Column(String(20), nullable=False)  # warning, critical, urgent, info
     message = Column(String(255), nullable=False)
     hours_remaining = Column(Float, nullable=True)
     status = Column(String(20), default="active")  # active, acknowledged, resolved
-    email_delivery_status = Column(String(50), default="In-app notification active")
-    spoken_announcement = Column(String(255), nullable=True)
+    email_delivery_status = Column(String(50), default="Simulated SMS/Email")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     acknowledged_at = Column(DateTime, nullable=True)
 

@@ -6,16 +6,16 @@ export interface Facility {
   latitude: float;
   longitude: float;
   address: string;
-  contact_phone?: string;
-  contact_email?: string;
   city?: string;
   district?: string;
   state?: string;
   pincode?: string;
+  contact_phone?: string;
+  contact_email?: string;
   source_url?: string;
   date_verified?: string;
   verification_status?: string;
-  is_connected: boolean;
+  is_connected?: boolean;
   safety_reserve_units: number;
   is_active: boolean;
   total_inventory?: number;
@@ -28,55 +28,55 @@ export interface User {
   id: number;
   email: string;
   name: string;
-  role: 'network_admin' | 'hospital_staff' | 'blood_bank_staff' | 'driver';
-  facility_id?: number;
+  role: 'admin' | 'hospital_staff' | 'blood_bank_officer' | 'driver';
+  facility_id?: number | null;
   facility_name?: string;
   phone?: string;
-  vehicle_type?: string;
-  vehicle_number?: string;
+  is_active: boolean;
 }
 
 export interface Driver {
   id: number;
-  user_id: number;
+  user_id?: number;
   name: string;
   phone: string;
   vehicle_type: string;
   vehicle_number: string;
-  current_lat?: number;
-  current_lng?: number;
-  status: 'available' | 'assigned' | 'in_transit' | 'off_duty';
-  last_location_update?: string;
+  current_lat: float;
+  current_lng: float;
+  status: 'available' | 'on_mission' | 'off_duty';
+  is_active: boolean;
 }
 
-export interface SourceRecommendationItem {
-  facility_id: number;
-  facility_name: string;
-  facility_type: string;
-  distance_km: number;
-  travel_time_minutes: number;
-  available_units: number;
-  is_connected: boolean;
-  score: number;
-  rationale: string;
-}
-
-export interface EmergencyBloodRequest {
+export interface EmergencyRequest {
   id: number;
   request_id: string;
-  hospital_id: number;
-  hospital_name?: string;
+  requesting_facility_id: number;
+  requesting_facility_name?: string;
   blood_group: string;
   component_type: string;
   quantity_needed: number;
+  quantity_allocated: number;
   quantity_fulfilled: number;
   urgency: 'critical' | 'urgent' | 'routine';
   required_by_time?: string;
-  clinical_notes?: string;
-  status: 'pending_search' | 'sources_recommended' | 'approved_reserved' | 'dispatched' | 'delivered' | 'cancelled';
-  source_recommendations: SourceRecommendationItem[];
+  delivery_destination?: string;
+  contact_phone?: string;
+  notes?: string;
+  status: 'submitted' | 'proposed' | 'partially_approved' | 'fully_approved' | 'in_transit' | 'completed' | 'cancelled' | 'unmet';
   created_at: string;
-  updated_at?: string;
+  updated_at: string;
+}
+
+export interface TemperatureLog {
+  id: number;
+  transfer_id: number;
+  temperature_c: number;
+  sensor_id: string;
+  is_simulated: boolean;
+  status: 'normal' | 'warning' | 'critical_excursion';
+  notes?: string;
+  recorded_at: string;
 }
 
 export interface TraceabilityEvent {
@@ -131,7 +131,7 @@ export interface TemperatureReading {
 export interface Transfer {
   id: number;
   transfer_id: string;
-  request_id?: string;
+  emergency_request_id?: number;
   origin_facility_id: number;
   origin_name?: string;
   destination_facility_id: number;
@@ -143,9 +143,7 @@ export interface Transfer {
   quantity: number;
   travel_time_minutes: number;
   distance_km: number;
-  eta_minutes?: number;
-  eta_type?: string;
-  status: 'proposed' | 'awaiting_approval' | 'approved' | 'driver_assigned' | 'dispatched' | 'delivered' | 'received' | 'cancelled' | 'rejected';
+  status: 'proposed' | 'approved' | 'reserved' | 'ready_for_pickup' | 'dispatched' | 'in_transit' | 'received' | 'cancelled' | 'rejected';
   cancellation_reason?: string;
   driver_id?: number;
   driver_name?: string;
@@ -155,11 +153,12 @@ export interface Transfer {
   driver_decline_reason?: string;
   optimization_run_id?: string;
   rationale?: string;
+  driver_id?: number | null;
+  driver_name?: string | null;
+  driver_status?: 'unassigned' | 'assigned' | 'accepted' | 'en_route_pickup' | 'picked_up' | 'in_transit' | 'delivered';
   temperature_current_c?: number;
-  temperature_min_c?: number;
-  temperature_max_c?: number;
-  temperature_status?: 'normal' | 'warning' | 'critical';
-  temperature_history?: TemperatureReading[];
+  temperature_status?: 'normal' | 'warning' | 'critical_excursion';
+  eta_minutes?: number | null;
   created_at: string;
   approved_at?: string;
   driver_assigned_at?: string;

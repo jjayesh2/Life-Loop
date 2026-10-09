@@ -2,6 +2,28 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+# --- AUTH & USERS ---
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    name: str
+    role: str  # network_admin, hospital_staff, blood_bank_staff, driver
+    facility_id: Optional[int] = None
+    facility_name: Optional[str] = None
+    phone: Optional[str] = None
+    vehicle_type: Optional[str] = None
+    vehicle_number: Optional[str] = None
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+# --- FACILITIES ---
 class FacilityBase(BaseModel):
     code: str
     name: str
@@ -9,29 +31,66 @@ class FacilityBase(BaseModel):
     latitude: float
     longitude: float
     address: str
+    city: str = "Nashik"
+    district: str = "Nashik"
+    state: str = "Maharashtra"
+    pincode: str = "422001"
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
     safety_reserve_units: int = 15
     is_active: bool = True
+    is_connected: bool = True
+    verification_status: str = "Connected Demo Facility"
+    source_url: str = "https://nashik.gov.in/en/public-utilities/hospitals/"
+    date_verified: str = "2026-03-15"
 
 class FacilityOut(FacilityBase):
     id: int
     total_inventory: Optional[int] = 0
     shortage_count: Optional[int] = 0
-    class Config:
-        from_attributes = True
 
+class FacilityCreate(FacilityBase):
+    pass
+
+class FacilityUpdate(BaseModel):
+    name: Optional[str] = None
+    facility_type: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    safety_reserve_units: Optional[int] = None
+    is_connected: Optional[bool] = None
+    verification_status: Optional[str] = None
+
+# --- DRIVERS ---
+class DriverOut(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    phone: str
+    vehicle_type: str
+    vehicle_number: str
+    current_lat: float
+    current_lng: float
+    status: str
+    last_location_update: datetime
+
+# --- INVENTORY ---
 class InventoryItemBase(BaseModel):
     tracking_id: str
     facility_id: int
     blood_group: str
     component_type: str
     quantity: int = 1
+    reserved_quantity: int = 0
     batch_ref: str
     collection_date: datetime
     expiry_date: datetime
     status: str = "available"
     storage_temp_c: float = 4.0
+    data_source_label: str = "Demo stock — simulated"
 
 class InventoryItemCreate(BaseModel):
     facility_id: int
@@ -51,6 +110,7 @@ class TraceabilityEventOut(BaseModel):
     operator: str
     details: str
     timestamp: datetime
+
     class Config:
         from_attributes = True
 
@@ -61,56 +121,114 @@ class InventoryItemOut(InventoryItemBase):
     created_at: datetime
     updated_at: datetime
     traceability_events: List[TraceabilityEventOut] = []
+
     class Config:
         from_attributes = True
 
-class DemandRecordBase(BaseModel):
+# --- EMERGENCY BLOOD REQUESTS ---
+class SourceRecommendationItem(BaseModel):
     facility_id: int
+    facility_name: str = ""
+    distance_km: float
+    travel_time_minutes: float
+    eligible_units_available: int
+    recommended_units_to_take: int
+    hours_until_batch_expiry: float
+    rationale: str
+
+class EmergencyRequestCreate(BaseModel):
+    hospital_id: int
     blood_group: str
     component_type: str
     quantity_needed: int
-    urgency: str = "urgent"
-    deadline_hours: float = 6.0
-    status: str = "unmet"
-    is_simulated: bool = False
+    urgency: str = "critical"  # critical, urgent, routine
+    required_by_hours: float = 3.0
+    clinical_notes: Optional[str] = None
 
-class DemandRecordOut(DemandRecordBase):
+class EmergencyRequestOut(BaseModel):
     id: int
-    facility_name: Optional[str] = None
+    request_id: str
+    hospital_id: int
+    hospital_name: Optional[str] = None
+    blood_group: str
+    component_type: str
+    quantity_needed: int
+    quantity_fulfilled: int
+    urgency: str
+    required_by_time: datetime
+    clinical_notes: Optional[str] = None
+    status: str
+    source_recommendations: List[SourceRecommendationItem] = []
     created_at: datetime
+    updated_at: datetime
+
+# --- DEMAND RECORDS ---
+class DemandRecordOut(BaseModel):
+    id: int
+    facility_id: int
+    facility_name: Optional[str] = None
+    blood_group: str
+    component_type: str
+    quantity_needed: int
+    urgency: str
+    deadline_hours: float
+    status: str
+    is_simulated: bool
+    created_at: datetime
+
     class Config:
         from_attributes = True
 
+# --- TRANSFERS & SHIPMENTS ---
 class TransferOut(BaseModel):
     id: int
     transfer_id: str
+    request_id: Optional[str] = None
     origin_facility_id: int
     origin_name: Optional[str] = None
     destination_facility_id: int
     destination_name: Optional[str] = None
     inventory_item_id: int
     tracking_id: Optional[str] = None
+    driver_id: Optional[int] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_vehicle: Optional[str] = None
+    driver_status: str = "unassigned"  # unassigned, offered, accepted, declined
+    driver_decline_reason: Optional[str] = None
+
     component_type: str
     blood_group: str
     quantity: int
     travel_time_minutes: float
     distance_km: float
+    eta_minutes: Optional[float] = None
+    eta_type: str = "calculated"
     status: str
     cancellation_reason: Optional[str] = None
     optimization_run_id: Optional[str] = None
     rationale: Optional[str] = None
+
+    temperature_current_c: float
+    temperature_min_c: float
+    temperature_max_c: float
+    temperature_status: str
+    temperature_history: List[Dict[str, Any]] = []
+
     created_at: datetime
     approved_at: Optional[datetime] = None
+    driver_assigned_at: Optional[datetime] = None
     dispatched_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
-    class Config:
-        from_attributes = True
 
+# --- ALERTS ---
 class AlertOut(BaseModel):
     id: int
     facility_id: int
     facility_name: Optional[str] = None
     inventory_item_id: Optional[int] = None
+    transfer_id: Optional[str] = None
     tracking_id: Optional[str] = None
     blood_group: Optional[str] = None
     component_type: Optional[str] = None
@@ -120,16 +238,16 @@ class AlertOut(BaseModel):
     hours_remaining: Optional[float] = None
     status: str
     email_delivery_status: str
+    spoken_announcement: Optional[str] = None
     created_at: datetime
     acknowledged_at: Optional[datetime] = None
-    class Config:
-        from_attributes = True
 
+# --- OPTIMIZATION & SIMULATION ---
 class OptimizationRequest(BaseModel):
-    scenario_id: Optional[str] = "default"
+    scenario_id: Optional[str] = "nashik_live"
     horizon_hours: float = 24.0
     weight_unmet_demand: float = 100.0
-    weight_expiry_risk: float = 10.0
+    weight_expiry_risk: float = 15.0
     weight_travel_time: float = 0.5
     strict_reserves: bool = True
 
@@ -163,14 +281,16 @@ class OptimizationResult(BaseModel):
     created_at: datetime
 
 class SimulationEventRequest(BaseModel):
-    event_type: str  # trauma_surge, route_disruption, facility_offline, new_supply, inventory_loss
+    event_type: str  # trauma_surge, route_disruption, facility_offline, new_supply, temp_deviation
     facility_id: Optional[int] = None
+    transfer_id: Optional[str] = None
     blood_group: Optional[str] = None
     component_type: Optional[str] = None
     quantity: Optional[int] = None
     route_origin_id: Optional[int] = None
     route_dest_id: Optional[int] = None
     delay_multiplier: Optional[float] = None
+    spike_temp_c: Optional[float] = None
     note: Optional[str] = None
 
 class DashboardSummary(BaseModel):
@@ -180,6 +300,10 @@ class DashboardSummary(BaseModel):
     units_approaching_expiry: int
     active_proposed_transfers: int
     completed_transfers: int
+    active_drivers_count: int
+    connected_facilities_count: int
+    public_listings_count: int
+    pending_emergency_requests_count: int
     latest_optimization_status: str
     active_alerts_count: int
     inventory_by_group: Dict[str, int]
@@ -198,11 +322,9 @@ class AuditLogOut(BaseModel):
     entity_id: Optional[str] = None
     details: Optional[str] = None
     timestamp: datetime
-    class Config:
-        from_attributes = True
 
 class RecordMovementRequest(BaseModel):
     event_type: str
-    operator: str = "Life-Loop Operator"
+    operator: str = "Nashik Blood Officer"
     details: str
     facility_name: str

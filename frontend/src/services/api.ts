@@ -6,7 +6,10 @@ import {
   Transfer,
   Alert,
   OptimizationResult,
-  AuditLog
+  AuditLog,
+  User,
+  Driver,
+  EmergencyBloodRequest
 } from '../types';
 
 const BASE_URL = '/api';
@@ -222,3 +225,166 @@ export async function askCopilot(query: string): Promise<{ answer: string; type:
   if (!res.ok) throw new Error('Failed to contact Copilot');
   return res.json();
 }
+
+// ==========================================
+// AUTH & DEMO ROLES
+// ==========================================
+export async function fetchDemoUsers(): Promise<User[]> {
+  const res = await fetch(`${BASE_URL}/auth/demo-users`);
+  if (!res.ok) throw new Error('Failed to fetch demo users');
+  return res.json();
+}
+
+export async function loginUser(email: string, password: string = 'demo123'): Promise<{ access_token: string; user: User }> {
+  const res = await fetch(`${BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Login failed');
+  }
+  return res.json();
+}
+
+// ==========================================
+// EMERGENCY BLOOD REQUESTS
+// ==========================================
+export async function fetchEmergencyRequests(params?: {
+  hospital_id?: number;
+  status?: string;
+}): Promise<EmergencyBloodRequest[]> {
+  const query = new URLSearchParams();
+  if (params?.hospital_id) query.set('hospital_id', params.hospital_id.toString());
+  if (params?.status) query.set('status', params.status);
+
+  const res = await fetch(`${BASE_URL}/emergency-requests?${query.toString()}`);
+  if (!res.ok) throw new Error('Failed to fetch emergency requests');
+  return res.json();
+}
+
+export async function submitEmergencyRequest(data: {
+  hospital_id: number;
+  blood_group: string;
+  component_type: string;
+  quantity_needed: number;
+  urgency: string;
+  required_by_time?: string;
+  clinical_notes?: string;
+}): Promise<EmergencyBloodRequest> {
+  const res = await fetch(`${BASE_URL}/emergency-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to submit emergency blood request');
+  }
+  return res.json();
+}
+
+export async function approveEmergencyRequest(
+  requestId: string,
+  payload: {
+    source_facility_id: number;
+    quantity: number;
+    approver_name?: string;
+  }
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/emergency-requests/${encodeURIComponent(requestId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to approve emergency request');
+  }
+  return res.json();
+}
+
+// ==========================================
+// DRIVER OPERATIONS & DISPATCH
+// ==========================================
+export async function fetchDrivers(): Promise<Driver[]> {
+  const res = await fetch(`${BASE_URL}/drivers`);
+  if (!res.ok) throw new Error('Failed to fetch drivers');
+  return res.json();
+}
+
+export async function fetchDriverAssignments(driverId: number): Promise<Transfer[]> {
+  const res = await fetch(`${BASE_URL}/drivers/${driverId}/assignments`);
+  if (!res.ok) throw new Error('Failed to fetch driver assignments');
+  return res.json();
+}
+
+export async function driverRespond(
+  transferId: string,
+  payload: {
+    driver_id: number;
+    action: 'accept' | 'decline';
+    decline_reason?: string;
+  }
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/driver-response`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to process driver response');
+  }
+  return res.json();
+}
+
+export async function confirmDriverPickup(
+  transferId: string,
+  payload?: { driver_name?: string }
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/pickup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to confirm pickup');
+  }
+  return res.json();
+}
+
+export async function confirmDelivery(
+  transferId: string,
+  payload?: { receiver_name?: string }
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/deliver`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to confirm delivery');
+  }
+  return res.json();
+}
+
+export async function simulateTemperatureSpike(
+  transferId: string,
+  spikeTempC: number = 11.5
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${encodeURIComponent(transferId)}/temperature-spike`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ spike_temp_c: spikeTempC })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to simulate temperature spike');
+  }
+  return res.json();
+}
+

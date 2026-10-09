@@ -3,9 +3,12 @@ import { Banner } from './components/Banner';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { CopilotModal } from './components/CopilotModal';
+import { EmergencyRequestModal } from './components/EmergencyRequestModal';
 
 // Pages
 import { CommandCenter } from './pages/CommandCenter';
+import { HospitalPortal } from './pages/HospitalPortal';
+import { DriverPortal } from './pages/DriverPortal';
 import { InventoryPage } from './pages/InventoryPage';
 import { TraceabilityPage } from './pages/TraceabilityPage';
 import { ExpiryAlertsPage } from './pages/ExpiryAlertsPage';
@@ -18,14 +21,19 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { AuditTrailPage } from './pages/AuditTrailPage';
 import { SettingsPage } from './pages/SettingsPage';
 
+// Context
+import { AuthProvider, useAuth } from './context/AuthContext';
+
 // Types and API
 import { DashboardSummary, Facility, Transfer, Alert } from './types';
 import { fetchDashboard, fetchFacilities, fetchTransfers, fetchAlerts } from './services/api';
 
-export function App() {
+function AppContent() {
+  const { currentUser } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [showCopilot, setShowCopilot] = useState<boolean>(false);
+  const [showEmergencyModal, setShowEmergencyModal] = useState<boolean>(false);
 
   // Core Data
   const [dashboardData, setDashboardData] = useState<DashboardSummary | null>(null);
@@ -61,6 +69,16 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // When role changes via Demo Role Switcher, jump to corresponding view
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentUser.role === 'driver') {
+      setCurrentTab('driver_portal');
+    } else if (currentUser.role === 'hospital_staff') {
+      setCurrentTab('hospital_portal');
+    }
+  }, [currentUser?.id, currentUser?.role]);
+
   useEffect(() => {
     if (selectedFacilityId) {
       const f = facilities.find(fac => fac.id === selectedFacilityId) || null;
@@ -71,12 +89,10 @@ export function App() {
   }, [selectedFacilityId, facilities]);
 
   const handleGlobalSearch = (query: string) => {
-    // If it looks like a tracking ID or batch, go to traceability
     if (query.toUpperCase().startsWith('LL-') || query.toUpperCase().startsWith('B-')) {
       setTraceTrackingId(query);
       setCurrentTab('traceability');
     } else {
-      // Otherwise search inventory
       setCurrentTab('inventory');
     }
   };
@@ -88,7 +104,7 @@ export function App() {
 
       {/* 2. Main Shell Layout */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Collapsible Sidebar with 12 items */}
+        {/* Collapsible Sidebar */}
         <Sidebar
           currentTab={currentTab}
           setCurrentTab={(tab) => {
@@ -109,6 +125,7 @@ export function App() {
             setSelectedFacility={setSelectedFacilityId}
             onOpenCopilot={() => setShowCopilot(true)}
             onNavigateToAlerts={() => setCurrentTab('alerts')}
+            onOpenEmergencyModal={() => setShowEmergencyModal(true)}
             alerts={alerts}
             onSearch={handleGlobalSearch}
           />
@@ -128,6 +145,14 @@ export function App() {
                 }}
                 selectedFacility={selectedFacilityObj}
               />
+            )}
+
+            {currentTab === 'hospital_portal' && (
+              <HospitalPortal facilities={facilities} />
+            )}
+
+            {currentTab === 'driver_portal' && (
+              <DriverPortal />
             )}
 
             {currentTab === 'inventory' && (
@@ -202,7 +227,23 @@ export function App() {
         isOpen={showCopilot}
         onClose={() => setShowCopilot(false)}
       />
+
+      {/* Global Emergency Blood Request Modal */}
+      <EmergencyRequestModal
+        isOpen={showEmergencyModal}
+        onClose={() => setShowEmergencyModal(false)}
+        facilities={facilities}
+        onRequestCreated={reloadData}
+      />
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

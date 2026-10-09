@@ -8,6 +8,14 @@ export interface Facility {
   address: string;
   contact_phone?: string;
   contact_email?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  pincode?: string;
+  source_url?: string;
+  date_verified?: string;
+  verification_status?: string;
+  is_connected: boolean;
   safety_reserve_units: number;
   is_active: boolean;
   total_inventory?: number;
@@ -15,6 +23,61 @@ export interface Facility {
 }
 
 export type float = number;
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: 'network_admin' | 'hospital_staff' | 'blood_bank_staff' | 'driver';
+  facility_id?: number;
+  facility_name?: string;
+  phone?: string;
+  vehicle_type?: string;
+  vehicle_number?: string;
+}
+
+export interface Driver {
+  id: number;
+  user_id: number;
+  name: string;
+  phone: string;
+  vehicle_type: string;
+  vehicle_number: string;
+  current_lat?: number;
+  current_lng?: number;
+  status: 'available' | 'assigned' | 'in_transit' | 'off_duty';
+  last_location_update?: string;
+}
+
+export interface SourceRecommendationItem {
+  facility_id: number;
+  facility_name: string;
+  facility_type: string;
+  distance_km: number;
+  travel_time_minutes: number;
+  available_units: number;
+  is_connected: boolean;
+  score: number;
+  rationale: string;
+}
+
+export interface EmergencyBloodRequest {
+  id: number;
+  request_id: string;
+  hospital_id: number;
+  hospital_name?: string;
+  blood_group: string;
+  component_type: string;
+  quantity_needed: number;
+  quantity_fulfilled: number;
+  urgency: 'critical' | 'urgent' | 'routine';
+  required_by_time?: string;
+  clinical_notes?: string;
+  status: 'pending_search' | 'sources_recommended' | 'approved_reserved' | 'dispatched' | 'delivered' | 'cancelled';
+  source_recommendations: SourceRecommendationItem[];
+  created_at: string;
+  updated_at?: string;
+}
 
 export interface TraceabilityEvent {
   id: number;
@@ -33,11 +96,13 @@ export interface InventoryItem {
   blood_group: string;
   component_type: string;
   quantity: number;
+  reserved_quantity?: number;
   batch_ref: string;
   collection_date: string;
   expiry_date: string;
   status: 'available' | 'reserved' | 'in_transit' | 'quarantined' | 'expired' | 'unavailable';
   storage_temp_c: number;
+  data_source_label?: string;
   qr_code_svg?: string;
   created_at: string;
   updated_at: string;
@@ -58,9 +123,15 @@ export interface DemandRecord {
   created_at: string;
 }
 
+export interface TemperatureReading {
+  timestamp: string;
+  temp_c: number;
+}
+
 export interface Transfer {
   id: number;
   transfer_id: string;
+  request_id?: string;
   origin_facility_id: number;
   origin_name?: string;
   destination_facility_id: number;
@@ -72,13 +143,28 @@ export interface Transfer {
   quantity: number;
   travel_time_minutes: number;
   distance_km: number;
-  status: 'proposed' | 'approved' | 'dispatched' | 'received' | 'cancelled' | 'rejected';
+  eta_minutes?: number;
+  eta_type?: string;
+  status: 'proposed' | 'awaiting_approval' | 'approved' | 'driver_assigned' | 'dispatched' | 'delivered' | 'received' | 'cancelled' | 'rejected';
   cancellation_reason?: string;
+  driver_id?: number;
+  driver_name?: string;
+  driver_phone?: string;
+  driver_vehicle?: string;
+  driver_status?: string;
+  driver_decline_reason?: string;
   optimization_run_id?: string;
   rationale?: string;
+  temperature_current_c?: number;
+  temperature_min_c?: number;
+  temperature_max_c?: number;
+  temperature_status?: 'normal' | 'warning' | 'critical';
+  temperature_history?: TemperatureReading[];
   created_at: string;
   approved_at?: string;
+  driver_assigned_at?: string;
   dispatched_at?: string;
+  delivered_at?: string;
   received_at?: string;
 }
 
@@ -96,6 +182,7 @@ export interface Alert {
   hours_remaining?: number;
   status: 'active' | 'acknowledged' | 'resolved';
   email_delivery_status: string;
+  spoken_announcement?: string;
   created_at: string;
   acknowledged_at?: string;
 }

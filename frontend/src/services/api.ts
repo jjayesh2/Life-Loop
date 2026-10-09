@@ -11,14 +11,31 @@ import {
 
 const BASE_URL = '/api';
 
+let activeUserHeaders: Record<string, string> = {};
+
+export function setActiveUserHeaders(headers: Record<string, string>) {
+  activeUserHeaders = { ...headers };
+}
+
+function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
+  return {
+    ...activeUserHeaders,
+    ...extraHeaders
+  };
+}
+
 export async function fetchDashboard(): Promise<DashboardSummary> {
-  const res = await fetch(`${BASE_URL}/dashboard`);
+  const res = await fetch(`${BASE_URL}/dashboard`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch dashboard summary');
   return res.json();
 }
 
 export async function fetchFacilities(): Promise<Facility[]> {
-  const res = await fetch(`${BASE_URL}/facilities`);
+  const res = await fetch(`${BASE_URL}/facilities`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch facilities');
   return res.json();
 }
@@ -35,7 +52,9 @@ export async function fetchInventory(params?: {
   if (params?.component_type) query.set('component_type', params.component_type);
   if (params?.status) query.set('status', params.status);
 
-  const res = await fetch(`${BASE_URL}/inventory?${query.toString()}`);
+  const res = await fetch(`${BASE_URL}/inventory?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch inventory');
   return res.json();
 }
@@ -43,7 +62,7 @@ export async function fetchInventory(params?: {
 export async function createInventoryItem(data: Partial<InventoryItem>): Promise<InventoryItem> {
   const res = await fetch(`${BASE_URL}/inventory`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data)
   });
   if (!res.ok) throw new Error('Failed to create inventory item');
@@ -51,7 +70,9 @@ export async function createInventoryItem(data: Partial<InventoryItem>): Promise
 }
 
 export async function lookupTraceability(identifier: string): Promise<InventoryItem> {
-  const res = await fetch(`${BASE_URL}/traceability/${encodeURIComponent(identifier)}`);
+  const res = await fetch(`${BASE_URL}/traceability/${encodeURIComponent(identifier)}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Item '${identifier}' not found`);
@@ -67,7 +88,7 @@ export async function recordMovementEvent(itemId: number, payload: {
 }): Promise<any> {
   const res = await fetch(`${BASE_URL}/traceability/${itemId}/events`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error('Failed to record movement event');
@@ -76,19 +97,27 @@ export async function recordMovementEvent(itemId: number, payload: {
 
 export async function fetchAlerts(status?: string): Promise<Alert[]> {
   const url = status ? `${BASE_URL}/alerts?status=${status}` : `${BASE_URL}/alerts`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch alerts');
   return res.json();
 }
 
 export async function triggerExpiryCheck(): Promise<any> {
-  const res = await fetch(`${BASE_URL}/alerts/run-expiry-check`, { method: 'POST' });
+  const res = await fetch(`${BASE_URL}/alerts/run-expiry-check`, {
+    method: 'POST',
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to run expiry check');
   return res.json();
 }
 
 export async function acknowledgeAlert(alertId: number): Promise<any> {
-  const res = await fetch(`${BASE_URL}/alerts/${alertId}/acknowledge`, { method: 'POST' });
+  const res = await fetch(`${BASE_URL}/alerts/${alertId}/acknowledge`, {
+    method: 'POST',
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to acknowledge alert');
   return res.json();
 }
@@ -96,7 +125,7 @@ export async function acknowledgeAlert(alertId: number): Promise<any> {
 export async function resolveAlert(alertId: number, notes?: string): Promise<any> {
   const res = await fetch(`${BASE_URL}/alerts/${alertId}/resolve`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ notes: notes || 'Resolved by authorized operator' })
   });
   if (!res.ok) throw new Error('Failed to resolve alert');
@@ -105,7 +134,9 @@ export async function resolveAlert(alertId: number, notes?: string): Promise<any
 
 export async function fetchDemands(facilityId?: number): Promise<DemandRecord[]> {
   const url = facilityId ? `${BASE_URL}/demand?facility_id=${facilityId}` : `${BASE_URL}/demand`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch demands');
   return res.json();
 }
@@ -115,7 +146,9 @@ export async function fetchForecasts(facilityId?: number, componentType?: string
   if (facilityId) query.set('facility_id', facilityId.toString());
   if (componentType) query.set('component_type', componentType);
 
-  const res = await fetch(`${BASE_URL}/forecasts?${query.toString()}`);
+  const res = await fetch(`${BASE_URL}/forecasts?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch forecasts');
   return res.json();
 }
@@ -127,7 +160,7 @@ export async function runOptimization(weights?: {
 }): Promise<OptimizationResult> {
   const res = await fetch(`${BASE_URL}/optimization/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       scenario_id: 'active',
       weight_unmet_demand: weights?.unmet_demand ?? 100.0,
@@ -140,14 +173,18 @@ export async function runOptimization(weights?: {
 }
 
 export async function fetchLatestOptimization(): Promise<any> {
-  const res = await fetch(`${BASE_URL}/optimization/latest`);
+  const res = await fetch(`${BASE_URL}/optimization/latest`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch latest optimization');
   return res.json();
 }
 
 export async function fetchTransfers(status?: string): Promise<Transfer[]> {
   const url = status ? `${BASE_URL}/transfers?status=${status}` : `${BASE_URL}/transfers`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch transfers');
   return res.json();
 }
@@ -155,7 +192,7 @@ export async function fetchTransfers(status?: string): Promise<Transfer[]> {
 export async function approveTransfer(transferId: string, authorizedQuantity?: number): Promise<any> {
   const res = await fetch(`${BASE_URL}/transfers/${transferId}/approve`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(authorizedQuantity !== undefined ? { authorized_quantity: authorizedQuantity } : {})
   });
   if (!res.ok) throw new Error('Failed to approve transfer');
@@ -165,7 +202,7 @@ export async function approveTransfer(transferId: string, authorizedQuantity?: n
 export async function rejectTransfer(transferId: string, reason?: string): Promise<any> {
   const res = await fetch(`${BASE_URL}/transfers/${transferId}/reject`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ reason: reason || 'Facility declined transfer proposal due to clinical reserve policy' })
   });
   if (!res.ok) throw new Error('Failed to reject transfer proposal');
@@ -261,7 +298,9 @@ export async function fetchDemoUsers(): Promise<any[]> {
 // ----------------------------------------
 export async function fetchEmergencyRequests(facilityId?: number): Promise<any[]> {
   const url = facilityId ? `${BASE_URL}/emergency-requests?facility_id=${facilityId}` : `${BASE_URL}/emergency-requests`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch emergency requests');
   return res.json();
 }
@@ -279,7 +318,7 @@ export async function createEmergencyRequest(data: {
 }): Promise<any> {
   const res = await fetch(`${BASE_URL}/emergency-requests`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data)
   });
   if (!res.ok) throw new Error('Failed to create emergency request');

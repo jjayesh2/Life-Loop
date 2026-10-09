@@ -14,8 +14,18 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  HeartPulse
+  HeartPulse,
+  Building2,
+  Plus,
+  Navigation,
+  Smartphone,
+  AlertTriangle,
+  UserCheck,
+  Send,
+  Radio,
+  CheckCircle2
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 interface SidebarProps {
   currentTab: string;
@@ -32,22 +42,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setCollapsed,
   alertCount
 }) => {
-  const menuItems = [
-    { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard },
-    { id: 'hospital', label: 'Hospital Portal', icon: HeartPulse },
-    { id: 'driver', label: 'Driver Console', icon: Truck },
-    { id: 'inventory', label: 'Blood Inventory', icon: Boxes },
-    { id: 'traceability', label: 'QR Traceability', icon: QrCode },
-    { id: 'alerts', label: 'Expiry Alerts', icon: BellRing, badge: alertCount },
-    { id: 'forecasts', label: 'Demand & Forecasts', icon: TrendingUp },
-    { id: 'map', label: 'Network Map', icon: MapPin },
-    { id: 'optimizer', label: 'Optimization Engine', icon: Cpu },
-    { id: 'simulator', label: 'Emergency Simulator', icon: Flame },
-    { id: 'transfers', label: 'Transfer Management', icon: Truck },
-    { id: 'analytics', label: 'Analytics & Impact', icon: BarChart3 },
-    { id: 'audit', label: 'Audit Trail', icon: History },
-    { id: 'settings', label: 'Settings & Controls', icon: Settings },
-  ];
+  const { currentUser } = useAuth();
+  const role = currentUser?.role || 'admin';
+
+  // Role-specific navigation menus strictly derived from backend identity
+  const getMenuItems = () => {
+    if (role === 'hospital_staff') {
+      return [
+        { id: 'hospital_overview', label: 'Hospital Overview', icon: HeartPulse },
+        { id: 'hospital_requests', label: 'Emergency Requests', icon: Flame },
+        { id: 'hospital_create_req', label: 'Create Request', icon: Plus },
+        { id: 'hospital_incoming', label: 'Incoming Transfers', icon: Truck },
+        { id: 'hospital_inventory', label: 'Local Inventory', icon: Boxes },
+        { id: 'hospital_alerts', label: 'Notifications', icon: BellRing, badge: alertCount },
+        { id: 'hospital_history', label: 'Request History', icon: History },
+        { id: 'hospital_profile', label: 'Hospital Profile', icon: Building2 },
+      ];
+    }
+
+    if (role === 'blood_bank_officer') {
+      return [
+        { id: 'bb_overview', label: 'Blood Bank Overview', icon: Building2 },
+        { id: 'bb_inventory', label: 'My Inventory', icon: Boxes },
+        { id: 'bb_requests', label: 'Emergency Requests', icon: Flame },
+        { id: 'bb_approvals', label: 'Transfer Approvals', icon: CheckCircle2 },
+        { id: 'bb_outgoing', label: 'Outgoing Transfers', icon: Send },
+        { id: 'bb_expiry', label: 'Expiry & Quality Alerts', icon: BellRing, badge: alertCount },
+        { id: 'bb_traceability', label: 'QR Traceability', icon: QrCode },
+        { id: 'bb_history', label: 'Transfer History', icon: History },
+        { id: 'bb_profile', label: 'Blood Bank Profile', icon: Building2 },
+      ];
+    }
+
+    if (role === 'driver') {
+      return [
+        { id: 'driver_overview', label: 'My Deliveries', icon: Truck },
+        { id: 'driver_available', label: 'Available Jobs', icon: Radio },
+        { id: 'driver_active', label: 'Active Delivery', icon: Navigation },
+        { id: 'driver_route', label: 'Route & Navigation', icon: MapPin },
+        { id: 'driver_history', label: 'Delivery History', icon: History },
+        { id: 'driver_incidents', label: 'Transport & Incidents', icon: AlertTriangle },
+        { id: 'driver_availability', label: 'My Availability', icon: UserCheck },
+        { id: 'driver_profile', label: 'Driver Profile', icon: Smartphone },
+      ];
+    }
+
+    // Default: Network Administrator
+    return [
+      { id: 'admin_command', label: 'Network Command Center', icon: LayoutDashboard },
+      { id: 'admin_facilities', label: 'Facility Management', icon: Building2 },
+      { id: 'admin_requests', label: 'Network-Wide Requests', icon: Flame },
+      { id: 'admin_inventory', label: 'Inventory Monitoring', icon: Boxes },
+      { id: 'admin_transfers', label: 'Transfer & Deliveries', icon: Truck },
+      { id: 'admin_optimizer', label: 'MILP Optimization Engine', icon: Cpu },
+      { id: 'admin_map', label: 'Network Map', icon: MapPin },
+      { id: 'admin_expiry', label: 'Expiry & Quality Surveillance', icon: BellRing, badge: alertCount },
+      { id: 'admin_analytics', label: 'Analytics & Impact', icon: BarChart3 },
+      { id: 'admin_audit', label: 'Audit Trail', icon: History },
+      { id: 'admin_settings', label: 'Settings & Controls', icon: Settings },
+    ];
+  };
+
+  const menuItems = getMenuItems();
 
   return (
     <aside

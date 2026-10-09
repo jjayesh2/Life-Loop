@@ -68,35 +68,46 @@ export const Navbar: React.FC<NavbarProps> = ({
           />
         </form>
 
-        {/* Facility Selector */}
-        <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
-          <Building2 className="w-4 h-4 text-slate-500" />
-          <select
-            value={selectedFacility ?? ''}
-            onChange={(e) => setSelectedFacility(e.target.value ? Number(e.target.value) : null)}
-            className="bg-transparent text-xs text-slate-700 font-medium focus:outline-none cursor-pointer max-w-[200px] truncate"
-          >
-            <option value="">All Nashik Facilities</option>
-            {facilities.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name} {f.is_connected ? '🟢' : '⚪ (Public)'}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Facility Selector - Admin only */}
+        {currentUser?.role === 'admin' ? (
+          <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+            <Building2 className="w-4 h-4 text-slate-500" />
+            <select
+              value={selectedFacility ?? ''}
+              onChange={(e) => setSelectedFacility(e.target.value ? Number(e.target.value) : null)}
+              className="bg-transparent text-xs text-slate-700 font-medium focus:outline-none cursor-pointer max-w-[200px] truncate"
+            >
+              <option value="">All Nashik Facilities</option>
+              {facilities.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name} {f.is_connected ? '🟢' : '⚪ (Public)'}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="hidden sm:flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+            <Building2 className="w-4 h-4 text-teal-600" />
+            <span className="text-xs font-semibold text-slate-700 truncate max-w-[180px]">
+              {currentUser?.facility_name || 'Assigned Logistics Fleet'}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Right Action Icons & Status */}
       <div className="flex items-center space-x-3">
-        {/* STAT Emergency Request Action Button */}
-        <button
-          onClick={onOpenEmergencyModal}
-          className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white shadow-sm text-xs font-bold transition animate-pulse"
-          title="Create STAT Emergency Blood Requisition"
-        >
-          <Flame className="w-4 h-4 text-white" />
-          <span className="hidden sm:inline">STAT Request</span>
-        </button>
+        {/* STAT Emergency Request Action Button - Hospital Staff and Admin only */}
+        {currentUser?.role && ['hospital_staff', 'admin'].includes(currentUser.role) && (
+          <button
+            onClick={onOpenEmergencyModal}
+            className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white shadow-sm text-xs font-bold transition animate-pulse"
+            title="Create STAT Emergency Blood Requisition"
+          >
+            <Flame className="w-4 h-4 text-white" />
+            <span className="hidden sm:inline">STAT Request</span>
+          </button>
+        )}
 
         {/* Sound & Voice Audio Toggles */}
         <div className="flex items-center space-x-1 border-r border-slate-200 pr-2">

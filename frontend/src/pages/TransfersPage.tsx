@@ -26,10 +26,14 @@ import { ManifestModal } from '../components/ManifestModal';
 import { soundService } from '../services/soundService';
 import { Thermometer, Flame } from 'lucide-react';
 
-export const TransfersPage: React.FC = () => {
+interface TransfersPageProps {
+  initialFilterTab?: string;
+}
+
+export const TransfersPage: React.FC<TransfersPageProps> = ({ initialFilterTab = 'proposed' }) => {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<string>('proposed');
+  const [activeTab, setActiveTab] = useState<string>(initialFilterTab);
   
   // Manifest modal
   const [manifestData, setManifestData] = useState<any>(null);

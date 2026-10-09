@@ -6,7 +6,10 @@ import {
   Transfer,
   Alert,
   OptimizationResult,
-  AuditLog
+  AuditLog,
+  User,
+  Driver,
+  EmergencyBloodRequest
 } from '../types';
 
 const BASE_URL = '/api';

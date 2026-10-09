@@ -39,6 +39,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   alerts,
   onSearch
 }) => {
+  const {
+    currentUser,
+    demoUsers,
+    switchUser,
+    soundSettings,
+    toggleSound,
+    toggleVoice,
+    toggleMute
+  } = useAuth();
+
   const [searchVal, setSearchVal] = useState('');
   const [showAlertMenu, setShowAlertMenu] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -53,10 +63,25 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
   };
 
+  const getRoleBadge = (role?: string) => {
+    switch (role) {
+      case 'hospital_staff':
+        return { text: 'Hospital Staff', bg: 'bg-rose-100 text-rose-800 border-rose-200' };
+      case 'blood_bank_staff':
+        return { text: 'Blood Bank', bg: 'bg-teal-100 text-teal-800 border-teal-200' };
+      case 'driver':
+        return { text: 'Courier Driver', bg: 'bg-blue-100 text-blue-800 border-blue-200' };
+      default:
+        return { text: 'Network Admin', bg: 'bg-purple-100 text-purple-800 border-purple-200' };
+    }
+  };
+
+  const roleBadge = getRoleBadge(currentUser?.role);
+
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-sm">
       {/* Left: Global Search & Facility Filter */}
-      <div className="flex items-center space-x-4 flex-1 max-w-2xl">
+      <div className="flex items-center space-x-3 flex-1 max-w-2xl">
         <form onSubmit={handleSearchSubmit} className="relative flex-1">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -64,7 +89,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             placeholder="Search tracking ID (e.g. LL-NSK-), batch ref, facility, blood group..."
             value={searchVal}
             onChange={(e) => setSearchVal(e.target.value)}
-            className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition"
+            className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition"
           />
         </form>
 
@@ -148,7 +173,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             className="relative p-2 rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition"
             title="Expiry & Shortage Alerts"
           >
-            <Bell className="w-5 h-5" />
+            <Bell className="w-4 h-4" />
             {activeAlerts.length > 0 && (
               <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce">
                 {activeAlerts.length}

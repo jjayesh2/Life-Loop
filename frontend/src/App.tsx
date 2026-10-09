@@ -21,12 +21,16 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { AuditTrailPage } from './pages/AuditTrailPage';
 import { SettingsPage } from './pages/SettingsPage';
 
+// Context
+import { AuthProvider, useAuth } from './context/AuthContext';
+
 // Types and API
 import { DashboardSummary, Facility, Transfer, Alert } from './types';
 import { fetchDashboard, fetchFacilities, fetchTransfers, fetchAlerts } from './services/api';
 import { useAuth } from './context/AuthContext';
 
-export function App() {
+function AppContent() {
+  const { currentUser } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [showCopilot, setShowCopilot] = useState<boolean>(false);
@@ -67,6 +71,16 @@ export function App() {
     const interval = setInterval(reloadData, 12000); // 12s polling for background updates
     return () => clearInterval(interval);
   }, []);
+
+  // When role changes via Demo Role Switcher, jump to corresponding view
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentUser.role === 'driver') {
+      setCurrentTab('driver_portal');
+    } else if (currentUser.role === 'hospital_staff') {
+      setCurrentTab('hospital_portal');
+    }
+  }, [currentUser?.id, currentUser?.role]);
 
   useEffect(() => {
     if (selectedFacilityId) {
@@ -233,6 +247,14 @@ export function App() {
         />
       )}
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

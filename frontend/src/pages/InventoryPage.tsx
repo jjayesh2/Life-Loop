@@ -305,6 +305,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
                   const hrsLeft = Math.round((exp.getTime() - now.getTime()) / (1000 * 3600));
                   const isExpiringSoon = hrsLeft <= 72 && hrsLeft > 0;
                   const isExpired = hrsLeft <= 0;
+                  const isReal = /e-RaktKosh/i.test(item.data_source_label || '');
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/80 transition">
@@ -349,7 +350,17 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ facilities, onOpen
                       <td className="p-3.5 text-center font-bold text-slate-900">{item.quantity}</td>
 
                       {/* Batch Ref */}
-                      <td className="p-3.5 font-mono text-slate-500">{item.batch_ref}</td>
+                      <td className="p-3.5 font-mono text-slate-500">
+                        {item.batch_ref}
+                        {isReal ? (
+                          <span
+                            className="ml-1.5 inline-block align-middle text-[9px] font-bold uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded"
+                            title={item.data_source_label}
+                          >
+                            live
+                          </span>
+                        ) : null}
+                      </td>
 
                       {/* Expiration with badge */}
                       <td className="p-3.5">

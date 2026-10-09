@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+dist/
+
+# Python cache & tests
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+test_*.db
+test_lifeloop.db
+
+# Environment variables
+.env
+.env.local
+
+# Runtime logs
+*.log
+
+# Editor
+.vscode/

@@ -1,3 +1,7 @@
+import csv
+import hashlib
+import math
+import os
 import uuid
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -7,6 +11,7 @@ from .models import (
     AuditLog, Scenario
 )
 from .services.traceability_service import generate_qr_svg_or_base64
+from .real_data import seed_real_data, REAL_LABEL
 
 # Verified Real Nashik Healthcare Facilities
 # 7 Live-Connected Life-Loop Nodes + 5 Public Directory Listings
@@ -32,6 +37,7 @@ NASHIK_FACILITIES = [
         "safety_reserve_units": 20,
         "is_active": True
     },
+    # 5. Wockhardt Hospitals Nashik
     {
         "id": 2,
         "code": "NMC-ARPAN-02",
@@ -116,6 +122,7 @@ NASHIK_FACILITIES = [
         "safety_reserve_units": 12,
         "is_active": True
     },
+    # 6. Dr. Vasantrao Pawar Medical College Hospital (MVP)
     {
         "id": 6,
         "code": "NMC-MVP-06",
@@ -137,6 +144,7 @@ NASHIK_FACILITIES = [
         "safety_reserve_units": 18,
         "is_active": True
     },
+    # 7. NMC Bytco Multi-specialty Hospital (Nashik Road)
     {
         "id": 7,
         "code": "NMC-BYTCO-07",
@@ -386,7 +394,7 @@ def seed_database(db: Session, force: bool = False):
     drivers, tracked inventory batches, demand records, and alerts.
     """
     if not force and db.query(Facility).first():
-        return  # already seeded
+        return
 
     if force:
         db.query(TemperatureLog).delete()
@@ -501,12 +509,14 @@ def seed_database(db: Session, force: bool = False):
             blood_group=spec["group"],
             component_type=spec["comp"],
             quantity=spec["qty"],
+            reserved_quantity=0,
             batch_ref=spec["batch"],
             collection_date=col_date,
             expiry_date=exp_date,
             status="available",
             storage_temp_c=4.0 if "Platelet" not in spec["comp"] else 22.0,
             qr_code_svg=qr_svg,
+            data_source_label="Demo stock — simulated",
             created_at=col_date
         )
         db.add(item)

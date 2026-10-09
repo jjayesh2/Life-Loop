@@ -31,14 +31,20 @@ from .services.expiry_service import evaluate_expiry_alerts, acknowledge_alert, 
 from .services.forecasting_service import get_demand_forecasts
 from .services.emergency_service import apply_emergency_event, notifier, TRAVEL_TIME_DISRUPTIONS
 from .services.manifest_service import generate_transfer_manifest_data
+from .services.emergency_request_service import (
+    submit_emergency_request, find_source_recommendations,
+    approve_transfer_and_assign_driver, handle_driver_response,
+    confirm_dispatch_and_in_transit, confirm_delivery_and_reconcile,
+    simulate_temperature_deviation
+)
 
 # Initialize DB tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="LIFE-LOOP API",
-    description="Intelligent Blood Supply Chain Optimization & Emergency Coordination Platform",
-    version="1.0.0"
+    title="LIFE-LOOP NASHIK API",
+    description="Intelligent Multi-Branch Blood Supply Chain Optimization & Emergency Coordination Platform for Nashik, Maharashtra",
+    version="2.0.0"
 )
 
 # CORS setup
@@ -56,31 +62,87 @@ def startup_event():
     with next(get_db()) as db:
         seed_database(db, force=False)
 
-# Global in-memory cache of latest optimization result
 LATEST_OPTIMIZATION_RESULT = None
 
 # ==========================================
-# 1. DASHBOARD & KPIS
+# 1. AUTHENTICATION & DEMO ROLES
+# ==========================================
+@app.post("/api/auth/login", response_model=AuthResponse)
+def login(creds: UserLogin, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == creds.email.lower()).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    # For demo environment, match credentials easily
+    if creds.password not in ["admin123", "hospital123", "bank123", "driver123", "demo123"]:
+        # Also check hash if exact
+        if not user.hashed_password.endswith(creds.password):
+            raise HTTPException(status_code=401, detail="Invalid password.")
+
+    fac_name = user.facility.name if user.facility else None
+    veh_type = user.driver_profile.vehicle_type if user.driver_profile else None
+    veh_num = user.driver_profile.vehicle_number if user.driver_profile else None
+
+    user_out = UserOut(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+        facility_id=user.facility_id,
+        facility_name=fac_name,
+        phone=user.phone,
+        vehicle_type=veh_type,
+        vehicle_number=veh_num
+    )
+
+    token = f"demo_token_{user.role}_{user.id}_{int(datetime.utcnow().timestamp())}"
+    return AuthResponse(access_token=token, user=user_out)
+
+@app.get("/api/auth/demo-users", response_model=List[UserOut])
+def get_demo_users(db: Session = Depends(get_db)):
+    """Returns quick-switch demo accounts so judges can test any role instantly."""
+    users = db.query(User).all()
+    res = []
+    for u in users:
+        fac_name = u.facility.name if u.facility else None
+        veh_type = u.driver_profile.vehicle_type if u.driver_profile else None
+        veh_num = u.driver_profile.vehicle_number if u.driver_profile else None
+        res.append(UserOut(
+            id=u.id,
+            email=u.email,
+            name=u.name,
+            role=u.role,
+            facility_id=u.facility_id,
+            facility_name=fac_name,
+            phone=u.phone,
+            vehicle_type=veh_type,
+            vehicle_number=veh_num
+        ))
+    return res
+
+
+# ==========================================
+# 2. DASHBOARD & KPIS
 # ==========================================
 @app.get("/api/dashboard", response_model=DashboardSummary)
 def get_dashboard(db: Session = Depends(get_db)):
-    # 1. Total available units
     total_avail = db.query(func.sum(InventoryItem.quantity)).filter(InventoryItem.status == "available").scalar() or 0
-    total_reserved = db.query(func.sum(InventoryItem.quantity)).filter(InventoryItem.status == "reserved").scalar() or 0
+    total_reserved = db.query(func.sum(InventoryItem.reserved_quantity)).scalar() or 0
 
-    # 2. Facilities at shortage risk
     facilities = db.query(Facility).all()
+    connected_facs = [f for f in facilities if f.is_connected]
+    public_listings = [f for f in facilities if not f.is_connected]
+
     shortage_facs = []
-    for f in facilities:
+    for f in connected_facs:
         stock = db.query(func.sum(InventoryItem.quantity)).filter(
             InventoryItem.facility_id == f.id,
             InventoryItem.status == "available"
         ).scalar() or 0
-        dem = db.query(func.sum(DemandRecord.quantity_needed)).filter(
-            DemandRecord.facility_id == f.id,
-            DemandRecord.status.in_(["unmet", "partially_fulfilled"])
+        dem = db.query(func.sum(EmergencyBloodRequest.quantity_needed)).filter(
+            EmergencyBloodRequest.hospital_id == f.id,
+            EmergencyBloodRequest.status.in_(["pending_search", "sources_recommended", "approved_reserved"])
         ).scalar() or 0
-        if stock < f.safety_reserve_units or dem > stock:
+        if stock < f.safety_reserve_units or dem > 0:
             shortage_facs.append({
                 "facility_id": f.id,
                 "name": f.name,
@@ -90,7 +152,6 @@ def get_dashboard(db: Session = Depends(get_db)):
                 "deficit": max(0, f.safety_reserve_units - stock) + dem
             })
 
-    # 3. Units approaching expiry (< 72h)
     now = datetime.utcnow()
     exp_thresh = now + timedelta(hours=72)
     expiring_items_q = db.query(InventoryItem).filter(
@@ -112,11 +173,11 @@ def get_dashboard(db: Session = Depends(get_db)):
             "hours_remaining": hrs
         })
 
-    # 4. Active & Completed transfers
-    active_transfers_count = db.query(Transfer).filter(Transfer.status.in_(["proposed", "approved", "dispatched"])).count()
-    completed_transfers_count = db.query(Transfer).filter(Transfer.status == "received").count()
+    active_transfers_count = db.query(Transfer).filter(Transfer.status.in_(["proposed", "awaiting_approval", "approved", "driver_assigned", "dispatched"])).count()
+    completed_transfers_count = db.query(Transfer).filter(Transfer.status.in_(["delivered", "received"])).count()
+    active_drivers_count = db.query(Driver).filter(Driver.status.in_(["available", "assigned", "in_transit"])).count()
+    pending_emergency_count = db.query(EmergencyBloodRequest).filter(EmergencyBloodRequest.status.in_(["pending_search", "sources_recommended", "approved_reserved"])).count()
 
-    # 5. Inventory breakdowns
     all_available = db.query(InventoryItem).filter(InventoryItem.status == "available").all()
     by_group: Dict[str, int] = {}
     by_comp: Dict[str, int] = {}
@@ -124,7 +185,6 @@ def get_dashboard(db: Session = Depends(get_db)):
         by_group[it.blood_group] = by_group.get(it.blood_group, 0) + it.quantity
         by_comp[it.component_type] = by_comp.get(it.component_type, 0) + it.quantity
 
-    # 6. Recent activity
     recent_txs = db.query(Transfer).order_by(Transfer.created_at.desc()).limit(5).all()
     tx_list = [
         {
@@ -136,6 +196,7 @@ def get_dashboard(db: Session = Depends(get_db)):
             "component_type": tx.component_type,
             "quantity": tx.quantity,
             "status": tx.status,
+            "driver_name": tx.driver.name if tx.driver else "Unassigned",
             "created_at": tx.created_at.isoformat() if tx.created_at else ""
         }
         for tx in recent_txs
@@ -148,13 +209,13 @@ def get_dashboard(db: Session = Depends(get_db)):
             "severity": al.severity,
             "message": al.message,
             "status": al.status,
+            "spoken": al.spoken_announcement,
             "created_at": al.created_at.isoformat() if al.created_at else ""
         }
         for al in recent_alerts
     ]
 
     active_alerts_count = db.query(Alert).filter(Alert.status == "active").count()
-
     latest_status = "Optimal" if LATEST_OPTIMIZATION_RESULT and LATEST_OPTIMIZATION_RESULT.get("is_feasible") else "Ready to Optimize"
 
     return {
@@ -164,6 +225,10 @@ def get_dashboard(db: Session = Depends(get_db)):
         "units_approaching_expiry": len(approaching_expiry_list),
         "active_proposed_transfers": active_transfers_count,
         "completed_transfers": completed_transfers_count,
+        "active_drivers_count": active_drivers_count,
+        "connected_facilities_count": len(connected_facs),
+        "public_listings_count": len(public_listings),
+        "pending_emergency_requests_count": pending_emergency_count,
         "latest_optimization_status": latest_status,
         "active_alerts_count": active_alerts_count,
         "inventory_by_group": by_group,
@@ -177,20 +242,23 @@ def get_dashboard(db: Session = Depends(get_db)):
 
 
 # ==========================================
-# 2. FACILITIES
+# 3. FACILITIES & PUBLIC LISTINGS
 # ==========================================
 @app.get("/api/facilities", response_model=List[FacilityOut])
-def get_facilities(db: Session = Depends(get_db)):
-    facs = db.query(Facility).all()
+def get_facilities(is_connected: Optional[bool] = None, db: Session = Depends(get_db)):
+    q = db.query(Facility)
+    if is_connected is not None:
+        q = q.filter(Facility.is_connected == is_connected)
+    facs = q.all()
     results = []
     for f in facs:
         total_inv = db.query(func.sum(InventoryItem.quantity)).filter(
             InventoryItem.facility_id == f.id,
             InventoryItem.status == "available"
         ).scalar() or 0
-        dem_count = db.query(func.sum(DemandRecord.quantity_needed)).filter(
-            DemandRecord.facility_id == f.id,
-            DemandRecord.status.in_(["unmet", "partially_fulfilled"])
+        dem_count = db.query(func.sum(EmergencyBloodRequest.quantity_needed)).filter(
+            EmergencyBloodRequest.hospital_id == f.id,
+            EmergencyBloodRequest.status.in_(["pending_search", "sources_recommended", "approved_reserved"])
         ).scalar() or 0
         
         f_dict = {
@@ -213,15 +281,243 @@ def get_facilities(db: Session = Depends(get_db)):
             "is_connected": f.is_connected,
             "safety_reserve_units": f.safety_reserve_units,
             "is_active": f.is_active,
+            "is_connected": f.is_connected,
+            "verification_status": f.verification_status,
+            "source_url": f.source_url,
+            "date_verified": f.date_verified,
             "total_inventory": total_inv,
             "shortage_count": dem_count
         }
         results.append(FacilityOut(**f_dict))
     return results
 
+@app.post("/api/facilities", response_model=FacilityOut)
+def create_facility(f_in: FacilityCreate, db: Session = Depends(get_db)):
+    fac = Facility(**f_in.dict())
+    db.add(fac)
+    db.commit()
+    db.refresh(fac)
+    return FacilityOut(**{**f_in.dict(), "id": fac.id, "total_inventory": 0, "shortage_count": 0})
+
+@app.patch("/api/facilities/{fac_id}", response_model=FacilityOut)
+def update_facility(fac_id: int, f_in: FacilityUpdate, db: Session = Depends(get_db)):
+    fac = db.query(Facility).filter(Facility.id == fac_id).first()
+    if not fac:
+        raise HTTPException(status_code=404, detail="Facility not found")
+    for k, v in f_in.dict(exclude_unset=True).items():
+        setattr(fac, k, v)
+    db.commit()
+    db.refresh(fac)
+    return FacilityOut(**{
+        "id": fac.id,
+        "code": fac.code,
+        "name": fac.name,
+        "facility_type": fac.facility_type,
+        "latitude": fac.latitude,
+        "longitude": fac.longitude,
+        "address": fac.address,
+        "city": fac.city,
+        "district": fac.district,
+        "state": fac.state,
+        "pincode": fac.pincode,
+        "contact_phone": fac.contact_phone,
+        "contact_email": fac.contact_email,
+        "safety_reserve_units": fac.safety_reserve_units,
+        "is_active": fac.is_active,
+        "is_connected": fac.is_connected,
+        "verification_status": fac.verification_status,
+        "source_url": fac.source_url,
+        "date_verified": fac.date_verified,
+        "total_inventory": 0,
+        "shortage_count": 0
+    })
+
 
 # ==========================================
-# 3. INVENTORY MANAGEMENT
+# 4. EMERGENCY BLOOD REQUESTS WORKFLOW
+# ==========================================
+@app.post("/api/emergency-requests", response_model=EmergencyRequestOut)
+async def create_emergency_blood_request(req_in: EmergencyRequestCreate, db: Session = Depends(get_db)):
+    req = await submit_emergency_request(
+        db=db,
+        hospital_id=req_in.hospital_id,
+        blood_group=req_in.blood_group,
+        component_type=req_in.component_type,
+        quantity_needed=req_in.quantity_needed,
+        urgency=req_in.urgency,
+        required_by_hours=req_in.required_by_hours,
+        clinical_notes=req_in.clinical_notes
+    )
+
+    recs = json.loads(req.source_recommendations_json or "[]")
+    return EmergencyRequestOut(
+        id=req.id,
+        request_id=req.request_id,
+        hospital_id=req.hospital_id,
+        hospital_name=req.hospital.name if req.hospital else None,
+        blood_group=req.blood_group,
+        component_type=req.component_type,
+        quantity_needed=req.quantity_needed,
+        quantity_fulfilled=req.quantity_fulfilled,
+        urgency=req.urgency,
+        required_by_time=req.required_by_time,
+        clinical_notes=req.clinical_notes,
+        status=req.status,
+        source_recommendations=[SourceRecommendationItem(**r) for r in recs],
+        created_at=req.created_at,
+        updated_at=req.updated_at
+    )
+
+@app.get("/api/emergency-requests", response_model=List[EmergencyRequestOut])
+def get_emergency_requests(hospital_id: Optional[int] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(EmergencyBloodRequest)
+    if hospital_id:
+        q = q.filter(EmergencyBloodRequest.hospital_id == hospital_id)
+    if status:
+        q = q.filter(EmergencyBloodRequest.status == status)
+    reqs = q.order_by(EmergencyBloodRequest.created_at.desc()).all()
+
+    res = []
+    for req in reqs:
+        recs = json.loads(req.source_recommendations_json or "[]")
+        res.append(EmergencyRequestOut(
+            id=req.id,
+            request_id=req.request_id,
+            hospital_id=req.hospital_id,
+            hospital_name=req.hospital.name if req.hospital else None,
+            blood_group=req.blood_group,
+            component_type=req.component_type,
+            quantity_needed=req.quantity_needed,
+            quantity_fulfilled=req.quantity_fulfilled,
+            urgency=req.urgency,
+            required_by_time=req.required_by_time,
+            clinical_notes=req.clinical_notes,
+            status=req.status,
+            source_recommendations=[SourceRecommendationItem(**r) for r in recs],
+            created_at=req.created_at,
+            updated_at=req.updated_at
+        ))
+    return res
+
+@app.post("/api/emergency-requests/{request_id}/approve")
+async def approve_request_source(
+    request_id: str,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    source_fac_id = int(payload.get("source_facility_id", 2))
+    quantity = int(payload.get("quantity", 1))
+    approver = payload.get("approver_name", "Nashik Blood Bank Officer")
+
+    tx = await approve_transfer_and_assign_driver(
+        db=db,
+        request_id=request_id,
+        source_facility_id=source_fac_id,
+        quantity=quantity,
+        approver_name=approver
+    )
+    return {"status": "success", "transfer_id": tx.transfer_id, "transfer_status": tx.status}
+
+
+# ==========================================
+# 5. DRIVERS & SHIPMENTS
+# ==========================================
+@app.get("/api/drivers", response_model=List[DriverOut])
+def get_drivers(db: Session = Depends(get_db)):
+    drivers = db.query(Driver).all()
+    res = []
+    for d in drivers:
+        res.append(DriverOut(
+            id=d.id,
+            user_id=d.user_id,
+            name=d.name,
+            phone=d.phone,
+            vehicle_type=d.vehicle_type,
+            vehicle_number=d.vehicle_number,
+            current_lat=d.current_lat,
+            current_lng=d.current_lng,
+            status=d.status,
+            last_location_update=d.last_location_update
+        ))
+    return res
+
+@app.get("/api/drivers/{driver_id}/assignments", response_model=List[TransferOut])
+def get_driver_assignments(driver_id: int, db: Session = Depends(get_db)):
+    txs = db.query(Transfer).filter(Transfer.driver_id == driver_id).order_by(Transfer.created_at.desc()).all()
+    res = []
+    for tx in txs:
+        hist = json.loads(tx.temperature_history_json or "[]")
+        res.append(TransferOut(
+            id=tx.id,
+            transfer_id=tx.transfer_id,
+            request_id=tx.request_id,
+            origin_facility_id=tx.origin_facility_id,
+            origin_name=tx.origin.name if tx.origin else None,
+            destination_facility_id=tx.destination_facility_id,
+            destination_name=tx.destination.name if tx.destination else None,
+            inventory_item_id=tx.inventory_item_id,
+            tracking_id=tx.inventory_item.tracking_id if tx.inventory_item else None,
+            driver_id=tx.driver_id,
+            driver_name=tx.driver.name if tx.driver else None,
+            driver_phone=tx.driver.phone if tx.driver else None,
+            driver_vehicle=f"{tx.driver.vehicle_type} ({tx.driver.vehicle_number})" if tx.driver else None,
+            driver_status=tx.driver_status,
+            driver_decline_reason=tx.driver_decline_reason,
+            component_type=tx.component_type,
+            blood_group=tx.blood_group,
+            quantity=tx.quantity,
+            travel_time_minutes=tx.travel_time_minutes,
+            distance_km=tx.distance_km,
+            eta_minutes=tx.eta_minutes,
+            eta_type=tx.eta_type,
+            status=tx.status,
+            cancellation_reason=tx.cancellation_reason,
+            optimization_run_id=tx.optimization_run_id,
+            rationale=tx.rationale,
+            temperature_current_c=tx.temperature_current_c,
+            temperature_min_c=tx.temperature_min_c,
+            temperature_max_c=tx.temperature_max_c,
+            temperature_status=tx.temperature_status,
+            temperature_history=hist,
+            created_at=tx.created_at,
+            approved_at=tx.approved_at,
+            driver_assigned_at=tx.driver_assigned_at,
+            dispatched_at=tx.dispatched_at,
+            delivered_at=tx.delivered_at,
+            received_at=tx.received_at
+        ))
+    return res
+
+@app.post("/api/transfers/{transfer_id}/driver-response")
+async def driver_respond(transfer_id: str, payload: Dict[str, Any], db: Session = Depends(get_db)):
+    driver_id = int(payload.get("driver_id", 1))
+    action = payload.get("action", "accept")  # accept or decline
+    reason = payload.get("decline_reason", None)
+
+    tx = await handle_driver_response(db, transfer_id, driver_id, action, reason)
+    return {"status": "success", "transfer_id": tx.transfer_id, "driver_status": tx.driver_status}
+
+@app.post("/api/transfers/{transfer_id}/pickup")
+async def driver_confirm_pickup(transfer_id: str, payload: Dict[str, Any] = {}, db: Session = Depends(get_db)):
+    driver_name = payload.get("driver_name", "Nashik Courier Driver")
+    tx = await confirm_dispatch_and_in_transit(db, transfer_id, driver_name)
+    return {"status": "success", "transfer_id": tx.transfer_id, "status": tx.status}
+
+@app.post("/api/transfers/{transfer_id}/deliver")
+async def hospital_confirm_delivery(transfer_id: str, payload: Dict[str, Any] = {}, db: Session = Depends(get_db)):
+    receiver = payload.get("receiver_name", "Apollo Emergency Technologist")
+    tx = await confirm_delivery_and_reconcile(db, transfer_id, receiver)
+    return {"status": "success", "transfer_id": tx.transfer_id, "status": tx.status}
+
+@app.post("/api/transfers/{transfer_id}/temperature-spike")
+async def trigger_temperature_spike(transfer_id: str, payload: Dict[str, Any] = {}, db: Session = Depends(get_db)):
+    spike = float(payload.get("spike_temp_c", 11.5))
+    tx = await simulate_temperature_deviation(db, transfer_id, spike)
+    return {"status": "success", "transfer_id": tx.transfer_id, "temperature_c": tx.temperature_current_c, "temperature_status": tx.temperature_status}
+
+
+# ==========================================
+# 6. INVENTORY MANAGEMENT
 # ==========================================
 @app.get("/api/inventory", response_model=List[InventoryItemOut])
 def get_inventory(
@@ -244,6 +540,16 @@ def get_inventory(
     items = q.order_by(InventoryItem.expiry_date.asc()).all()
     result = []
     for it in items:
+        events_out = [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "facility_name": e.facility_name,
+                "operator": e.operator,
+                "details": e.details,
+                "timestamp": e.timestamp
+            } for e in (it.traceability_events or [])
+        ]
         item_dict = {
             "id": it.id,
             "tracking_id": it.tracking_id,
@@ -252,22 +558,25 @@ def get_inventory(
             "blood_group": it.blood_group,
             "component_type": it.component_type,
             "quantity": it.quantity,
+            "reserved_quantity": it.reserved_quantity,
             "batch_ref": it.batch_ref,
             "collection_date": it.collection_date,
             "expiry_date": it.expiry_date,
             "status": it.status,
             "storage_temp_c": it.storage_temp_c,
+            "data_source_label": it.data_source_label,
             "qr_code_svg": it.qr_code_svg,
             "created_at": it.created_at,
             "updated_at": it.updated_at,
-            "traceability_events": it.traceability_events
+            "traceability_events": events_out
         }
         result.append(InventoryItemOut(**item_dict))
     return result
 
 @app.post("/api/inventory", response_model=InventoryItemOut)
 def create_inventory_item(item_in: InventoryItemCreate, db: Session = Depends(get_db)):
-    tid = f"LL-{item_in.blood_group.replace('+', 'POS').replace('-', 'NEG')}-{uuid.uuid4().hex[:6].upper()}"
+    grp_code = item_in.blood_group.replace('+', 'POS').replace('-', 'NEG')
+    tid = f"LL-NSK-{grp_code}-{uuid.uuid4().hex[:5].upper()}"
     qr_code = generate_qr_svg_or_base64(tid)
     
     item = InventoryItem(
@@ -276,18 +585,19 @@ def create_inventory_item(item_in: InventoryItemCreate, db: Session = Depends(ge
         blood_group=item_in.blood_group,
         component_type=item_in.component_type,
         quantity=item_in.quantity,
+        reserved_quantity=0,
         batch_ref=item_in.batch_ref,
         collection_date=item_in.collection_date,
         expiry_date=item_in.expiry_date,
         status=item_in.status,
         storage_temp_c=item_in.storage_temp_c,
-        qr_code_svg=qr_code
+        qr_code_svg=qr_code,
+        data_source_label="Demo stock — simulated"
     )
     db.add(item)
     db.commit()
     db.refresh(item)
 
-    # Initial traceability event
     fac = db.query(Facility).filter(Facility.id == item_in.facility_id).first()
     record_movement_event(
         db=db,
@@ -305,11 +615,13 @@ def create_inventory_item(item_in: InventoryItemCreate, db: Session = Depends(ge
         "blood_group": item.blood_group,
         "component_type": item.component_type,
         "quantity": item.quantity,
+        "reserved_quantity": item.reserved_quantity,
         "batch_ref": item.batch_ref,
         "collection_date": item.collection_date,
         "expiry_date": item.expiry_date,
         "status": item.status,
         "storage_temp_c": item.storage_temp_c,
+        "data_source_label": item.data_source_label,
         "qr_code_svg": item.qr_code_svg,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
@@ -322,7 +634,7 @@ def export_inventory_csv(db: Session = Depends(get_db)):
     items = db.query(InventoryItem).all()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Tracking ID", "Facility", "Blood Group", "Component", "Quantity", "Batch Ref", "Status", "Expiry Date", "Storage Temp (°C)"])
+    writer.writerow(["Tracking ID", "Facility", "Blood Group", "Component", "Quantity", "Reserved Qty", "Batch Ref", "Status", "Expiry Date", "Storage Temp (°C)", "Data Source"])
     for it in items:
         writer.writerow([
             it.tracking_id,
@@ -330,16 +642,18 @@ def export_inventory_csv(db: Session = Depends(get_db)):
             it.blood_group,
             it.component_type,
             it.quantity,
+            it.reserved_quantity,
             it.batch_ref,
             it.status,
             it.expiry_date.isoformat(),
-            it.storage_temp_c
+            it.storage_temp_c,
+            it.data_source_label
         ])
     output.seek(0)
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=life_loop_inventory.csv"}
+        headers={"Content-Disposition": "attachment; filename=nashik_blood_inventory.csv"}
     )
 
 @app.post("/api/inventory/import")
@@ -365,7 +679,7 @@ async def import_inventory_csv(file: UploadFile = File(...), db: Session = Depen
             else:
                 exp_dt = datetime.utcnow() + timedelta(days=30)
             
-            tid = f"LL-IMP-{uuid.uuid4().hex[:6].upper()}"
+            tid = f"LL-NSK-IMP-{uuid.uuid4().hex[:5].upper()}"
             qr = generate_qr_svg_or_base64(tid)
 
             item = InventoryItem(
@@ -374,12 +688,14 @@ async def import_inventory_csv(file: UploadFile = File(...), db: Session = Depen
                 blood_group=group,
                 component_type=comp,
                 quantity=qty,
+                reserved_quantity=0,
                 batch_ref=batch,
                 collection_date=datetime.utcnow(),
                 expiry_date=exp_dt,
                 status="available",
                 storage_temp_c=4.0,
-                qr_code_svg=qr
+                qr_code_svg=qr,
+                data_source_label="CSV Imported (Demo Stock)"
             )
             db.add(item)
             imported_count += 1
@@ -389,42 +705,12 @@ async def import_inventory_csv(file: UploadFile = File(...), db: Session = Depen
     db.commit()
     return {"imported": imported_count, "errors": errors}
 
-@app.get("/api/inventory/{item_id}", response_model=InventoryItemOut)
-def get_inventory_item(item_id: int, db: Session = Depends(get_db)):
-    it = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()
-    if not it:
-        raise HTTPException(status_code=404, detail="Inventory item not found")
-    
-    item_dict = {
-        "id": it.id,
-        "tracking_id": it.tracking_id,
-        "facility_id": it.facility_id,
-        "facility_name": it.facility.name if it.facility else None,
-        "blood_group": it.blood_group,
-        "component_type": it.component_type,
-        "quantity": it.quantity,
-        "batch_ref": it.batch_ref,
-        "collection_date": it.collection_date,
-        "expiry_date": it.expiry_date,
-        "status": it.status,
-        "storage_temp_c": it.storage_temp_c,
-        "qr_code_svg": it.qr_code_svg,
-        "created_at": it.created_at,
-        "updated_at": it.updated_at,
-        "traceability_events": it.traceability_events
-    }
-    return InventoryItemOut(**item_dict)
-
 
 # ==========================================
-# 4. QR CODE TRACEABILITY
+# 7. QR CODE TRACEABILITY
 # ==========================================
 @app.get("/api/traceability/{identifier}", response_model=InventoryItemOut)
 def lookup_traceability(identifier: str, db: Session = Depends(get_db)):
-    """
-    Looks up an inventory item by tracking_id, batch_ref, or numeric ID.
-    Used by QR scanning and manual search.
-    """
     it = db.query(InventoryItem).filter(
         (InventoryItem.tracking_id == identifier) |
         (InventoryItem.batch_ref == identifier)
@@ -436,7 +722,7 @@ def lookup_traceability(identifier: str, db: Session = Depends(get_db)):
     if not it:
         raise HTTPException(
             status_code=404,
-            detail=f"Tracking identifier '{identifier}' not found in registry. Ensure unit was logged in Life-Loop."
+            detail=f"Tracking identifier '{identifier}' not found in Nashik registry."
         )
 
     item_dict = {
@@ -447,15 +733,26 @@ def lookup_traceability(identifier: str, db: Session = Depends(get_db)):
         "blood_group": it.blood_group,
         "component_type": it.component_type,
         "quantity": it.quantity,
+        "reserved_quantity": it.reserved_quantity,
         "batch_ref": it.batch_ref,
         "collection_date": it.collection_date,
         "expiry_date": it.expiry_date,
         "status": it.status,
         "storage_temp_c": it.storage_temp_c,
+        "data_source_label": it.data_source_label,
         "qr_code_svg": it.qr_code_svg,
         "created_at": it.created_at,
         "updated_at": it.updated_at,
-        "traceability_events": it.traceability_events
+        "traceability_events": [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "facility_name": e.facility_name,
+                "operator": e.operator,
+                "details": e.details,
+                "timestamp": e.timestamp
+            } for e in (it.traceability_events or [])
+        ]
     }
     return InventoryItemOut(**item_dict)
 
@@ -481,7 +778,7 @@ def record_traceability_event_endpoint(
 
 
 # ==========================================
-# 5. EXPIRY ALERTS
+# 8. EXPIRY ALERTS
 # ==========================================
 @app.get("/api/alerts", response_model=List[AlertOut])
 def get_alerts(status: Optional[str] = None, db: Session = Depends(get_db)):
@@ -497,6 +794,7 @@ def get_alerts(status: Optional[str] = None, db: Session = Depends(get_db)):
             facility_id=al.facility_id,
             facility_name=al.facility.name if al.facility else None,
             inventory_item_id=al.inventory_item_id,
+            transfer_id=al.transfer_id,
             tracking_id=al.inventory_item.tracking_id if al.inventory_item else None,
             blood_group=al.inventory_item.blood_group if al.inventory_item else None,
             component_type=al.inventory_item.component_type if al.inventory_item else None,
@@ -506,6 +804,7 @@ def get_alerts(status: Optional[str] = None, db: Session = Depends(get_db)):
             hours_remaining=al.hours_remaining,
             status=al.status,
             email_delivery_status=al.email_delivery_status,
+            spoken_announcement=al.spoken_announcement,
             created_at=al.created_at,
             acknowledged_at=al.acknowledged_at
         ))
@@ -513,10 +812,6 @@ def get_alerts(status: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.post("/api/alerts/run-expiry-check")
 def trigger_expiry_check(db: Session = Depends(get_db)):
-    """
-    On-demand expiry check for demo judges & operators.
-    Evaluates thresholds, quarantines expired, triggers notifications.
-    """
     result = evaluate_expiry_alerts(db)
     return result
 
@@ -540,60 +835,124 @@ def resolve_alert_endpoint(alert_id: int, payload: Optional[Dict[str, str]] = No
 
 
 # ==========================================
-# 6. DEMAND & FORECASTS
+# 9. TRANSFERS & MANIFESTS
 # ==========================================
-@app.get("/api/demand", response_model=List[DemandRecordOut])
-def get_demands(facility_id: Optional[int] = None, db: Session = Depends(get_db)):
-    q = db.query(DemandRecord)
-    if facility_id:
-        q = q.filter(DemandRecord.facility_id == facility_id)
-    demands = q.order_by(DemandRecord.created_at.desc()).all()
-    
+@app.get("/api/transfers", response_model=List[TransferOut])
+def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(Transfer)
+    if status:
+        q = q.filter(Transfer.status == status)
+    transfers = q.order_by(Transfer.created_at.desc()).all()
+
     res = []
-    for d in demands:
-        res.append(DemandRecordOut(
-            id=d.id,
-            facility_id=d.facility_id,
-            facility_name=d.facility.name if d.facility else None,
-            blood_group=d.blood_group,
-            component_type=d.component_type,
-            quantity_needed=d.quantity_needed,
-            urgency=d.urgency,
-            deadline_hours=d.deadline_hours,
-            status=d.status,
-            is_simulated=d.is_simulated,
-            created_at=d.created_at
+    for tx in transfers:
+        hist = json.loads(tx.temperature_history_json or "[]")
+        res.append(TransferOut(
+            id=tx.id,
+            transfer_id=tx.transfer_id,
+            request_id=tx.request_id,
+            origin_facility_id=tx.origin_facility_id,
+            origin_name=tx.origin.name if tx.origin else None,
+            destination_facility_id=tx.destination_facility_id,
+            destination_name=tx.destination.name if tx.destination else None,
+            inventory_item_id=tx.inventory_item_id,
+            tracking_id=tx.inventory_item.tracking_id if tx.inventory_item else None,
+            driver_id=tx.driver_id,
+            driver_name=tx.driver.name if tx.driver else None,
+            driver_phone=tx.driver.phone if tx.driver else None,
+            driver_vehicle=f"{tx.driver.vehicle_type} ({tx.driver.vehicle_number})" if tx.driver else None,
+            driver_status=tx.driver_status,
+            driver_decline_reason=tx.driver_decline_reason,
+            component_type=tx.component_type,
+            blood_group=tx.blood_group,
+            quantity=tx.quantity,
+            travel_time_minutes=tx.travel_time_minutes,
+            distance_km=tx.distance_km,
+            eta_minutes=tx.eta_minutes,
+            eta_type=tx.eta_type,
+            status=tx.status,
+            cancellation_reason=tx.cancellation_reason,
+            optimization_run_id=tx.optimization_run_id,
+            rationale=tx.rationale,
+            temperature_current_c=tx.temperature_current_c,
+            temperature_min_c=tx.temperature_min_c,
+            temperature_max_c=tx.temperature_max_c,
+            temperature_status=tx.temperature_status,
+            temperature_history=hist,
+            created_at=tx.created_at,
+            approved_at=tx.approved_at,
+            driver_assigned_at=tx.driver_assigned_at,
+            dispatched_at=tx.dispatched_at,
+            delivered_at=tx.delivered_at,
+            received_at=tx.received_at
         ))
     return res
 
-@app.get("/api/forecasts")
-def get_forecasts_endpoint(
-    facility_id: Optional[int] = None,
-    component_type: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    return get_demand_forecasts(db, facility_id=facility_id, component_type=component_type)
+@app.get("/api/transfers/{transfer_id}/manifest")
+def get_manifest(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    return generate_transfer_manifest_data(tx)
+
+@app.post("/api/transfers/{transfer_id}/approve")
+def approve_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    tx.status = "approved"
+    tx.approved_at = datetime.utcnow()
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
+
+@app.post("/api/transfers/{transfer_id}/dispatch")
+def dispatch_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    tx.status = "dispatched"
+    tx.dispatched_at = datetime.utcnow()
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
+
+@app.post("/api/transfers/{transfer_id}/receive")
+def receive_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    tx.status = "received"
+    tx.received_at = datetime.utcnow()
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
+
+@app.post("/api/transfers/{transfer_id}/cancel")
+def cancel_transfer_endpoint(transfer_id: str, payload: Dict[str, Any] = {}, db: Session = Depends(get_db)):
+    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    tx.status = "cancelled"
+    tx.cancellation_reason = payload.get("reason", "Operator cancelled")
+    db.commit()
+    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
 
 
 # ==========================================
-# 7. MILP OPTIMIZATION ENGINE
+# 10. MILP OPTIMIZATION ENGINE
 # ==========================================
 @app.post("/api/optimization/run", response_model=OptimizationResult)
 def run_optimization(req: OptimizationRequest, db: Session = Depends(get_db)):
     global LATEST_OPTIMIZATION_RESULT
     now = datetime.utcnow()
 
-    # Build facility inputs
     facilities = [
         {
             "id": f.id,
             "name": f.name,
             "safety_reserve_units": f.safety_reserve_units if f.is_active else 99999
         }
-        for f in db.query(Facility).all()
+        for f in db.query(Facility).filter(Facility.is_connected == True).all()
     ]
 
-    # Build available inventory inputs
     inventory = [
         {
             "id": it.id,
@@ -601,30 +960,41 @@ def run_optimization(req: OptimizationRequest, db: Session = Depends(get_db)):
             "facility_id": it.facility_id,
             "blood_group": it.blood_group,
             "component_type": it.component_type,
-            "quantity": it.quantity,
+            "quantity": it.quantity - it.reserved_quantity,
             "status": it.status,
             "expiry_date": it.expiry_date
         }
         for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()
+        if (it.quantity - it.reserved_quantity) > 0
     ]
 
-    # Build active demand inputs
-    demands = [
-        {
-            "id": dm.id,
-            "facility_id": dm.facility_id,
-            "blood_group": dm.blood_group,
-            "component_type": dm.component_type,
-            "quantity_needed": dm.quantity_needed,
-            "urgency": dm.urgency,
-            "deadline_hours": dm.deadline_hours,
-            "status": dm.status
-        }
-        for dm in db.query(DemandRecord).filter(DemandRecord.status.in_(["unmet", "partially_fulfilled"])).all()
-    ]
+    # Combine regular demand and emergency requests
+    demands = []
+    for d in db.query(EmergencyBloodRequest).filter(EmergencyBloodRequest.status.in_(["pending_search", "sources_recommended"])).all():
+        demands.append({
+            "id": d.id,
+            "facility_id": d.hospital_id,
+            "blood_group": d.blood_group,
+            "component_type": d.component_type,
+            "quantity_needed": d.quantity_needed - d.quantity_fulfilled,
+            "urgency": d.urgency,
+            "deadline_hours": max(1.0, (d.required_by_time - now).total_seconds() / 3600.0),
+            "status": "unmet"
+        })
 
-    # Dynamic travel time matrix with any disruptions
-    travel_matrix = dict(TRAVEL_TIME_MATRIX)
+    for d in db.query(DemandRecord).filter(DemandRecord.status.in_(["unmet", "partially_fulfilled"])).all():
+        demands.append({
+            "id": d.id,
+            "facility_id": d.facility_id,
+            "blood_group": d.blood_group,
+            "component_type": d.component_type,
+            "quantity_needed": d.quantity_needed,
+            "urgency": d.urgency,
+            "deadline_hours": d.deadline_hours,
+            "status": d.status
+        })
+
+    travel_matrix = dict(NASHIK_TRAVEL_TIMES)
     travel_matrix.update(TRAVEL_TIME_DISRUPTIONS)
 
     weights = {
@@ -643,54 +1013,13 @@ def run_optimization(req: OptimizationRequest, db: Session = Depends(get_db)):
     )
     result = optimizer.solve()
 
-    # Persist proposed transfers in DB
-    if result["is_feasible"] and result["proposed_transfers"]:
-        run_id = result["run_id"]
-        # Clear previous proposed (unapproved) transfers for this run
-        for prop in result["proposed_transfers"]:
-            # Check if matching proposed transfer already exists
-            existing = db.query(Transfer).filter(
-                Transfer.inventory_item_id == prop["item_id"],
-                Transfer.destination_facility_id == prop["destination_id"],
-                Transfer.status == "proposed"
-            ).first()
-            if not existing:
-                tx = Transfer(
-                    transfer_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
-                    origin_facility_id=prop["origin_id"],
-                    destination_facility_id=prop["destination_id"],
-                    inventory_item_id=prop["item_id"],
-                    component_type=prop["component_type"],
-                    blood_group=prop["blood_group"],
-                    quantity=prop["quantity"],
-                    travel_time_minutes=prop["travel_time_minutes"],
-                    distance_km=round(prop["travel_time_minutes"] * 0.75, 1),
-                    status="proposed",
-                    optimization_run_id=run_id,
-                    rationale=prop["explanation"],
-                    created_at=now
-                )
-                db.add(tx)
-        
-        # Audit log entry
-        audit = AuditLog(
-            action="OPTIMIZATION_SOLVED",
-            actor="MILPOptimizer",
-            entity_type="OptimizationRun",
-            entity_id=run_id,
-            details=f"Solver {result['solver_name']} returned status '{result['solver_status']}' with {len(result['proposed_transfers'])} proposed transfers in {result['runtime_seconds']}s",
-            timestamp=now
-        )
-        db.add(audit)
-        db.commit()
-
     LATEST_OPTIMIZATION_RESULT = result
     return result
 
 @app.get("/api/optimization/latest")
 def get_latest_optimization():
     if not LATEST_OPTIMIZATION_RESULT:
-        return {"status": "no_previous_run", "message": "No optimization run recorded yet. Click 'Run MILP Optimization'."}
+        return {"status": "no_previous_run", "message": "No optimization run recorded yet. Click 'Execute MILP Optimization'."}
     return LATEST_OPTIMIZATION_RESULT
 
 
@@ -1492,28 +1821,32 @@ async def websocket_scenario_endpoint(websocket: WebSocket, scenario_id: str):
     await notifier.connect(websocket)
     try:
         while True:
-            # Keep connection alive & receive client messages
             data = await websocket.receive_text()
-            # Echo heartbeat
-            await websocket.send_json({"type": "HEARTBEAT", "payload": "Connected to Life-Loop Simulation Stream"})
+            await websocket.send_json({"type": "HEARTBEAT", "payload": "Connected to Life-Loop Nashik Stream"})
     except WebSocketDisconnect:
         notifier.disconnect(websocket)
 
 @app.post("/api/scenarios/event")
 async def trigger_simulation_event(req: SimulationEventRequest, db: Session = Depends(get_db)):
-    travel_matrix = dict(TRAVEL_TIME_MATRIX)
+    travel_matrix = dict(NASHIK_TRAVEL_TIMES)
     travel_matrix.update(TRAVEL_TIME_DISRUPTIONS)
     
     payload = {
         "facility_id": req.facility_id,
+        "transfer_id": req.transfer_id,
         "blood_group": req.blood_group,
         "component_type": req.component_type,
         "quantity": req.quantity,
         "route_origin_id": req.route_origin_id,
         "route_dest_id": req.route_dest_id,
         "delay_multiplier": req.delay_multiplier,
+        "spike_temp_c": req.spike_temp_c,
         "note": req.note
     }
+
+    if req.event_type == "temp_deviation" and req.transfer_id:
+        tx = await simulate_temperature_deviation(db, req.transfer_id, req.spike_temp_c or 11.5)
+        return {"status": "success", "event": {"event_type": "temp_deviation", "details": f"Temperature spiked to {tx.temperature_current_c}°C on {tx.transfer_id}"}}
 
     res = await apply_emergency_event(db, req.event_type, payload, travel_matrix)
     global LATEST_OPTIMIZATION_RESULT
@@ -1522,33 +1855,25 @@ async def trigger_simulation_event(req: SimulationEventRequest, db: Session = De
 
 @app.post("/api/scenarios/reset")
 def reset_scenario_to_seed(db: Session = Depends(get_db)):
-    """
-    Resets the entire database back to deterministic seed data.
-    """
     TRAVEL_TIME_DISRUPTIONS.clear()
     seed_database(db, force=True)
     global LATEST_OPTIMIZATION_RESULT
     LATEST_OPTIMIZATION_RESULT = None
-    return {"status": "success", "message": "Demo data and scenarios restored to initial deterministic state."}
+    return {"status": "success", "message": "Demo data and scenarios restored to initial Nashik deterministic baseline."}
 
-
-# ==========================================
-# 10. IMPACT ANALYTICS & AUDIT TRAIL
-# ==========================================
 @app.get("/api/analytics/impact")
 def get_impact_analytics(db: Session = Depends(get_db)):
     if LATEST_OPTIMIZATION_RESULT and "baseline_comparison" in LATEST_OPTIMIZATION_RESULT:
         return LATEST_OPTIMIZATION_RESULT["baseline_comparison"]
     
-    # Fallback to compute baseline on current DB state
     optimizer = MILPOptimizer(
-        facilities=[{"id": f.id, "safety_reserve_units": f.safety_reserve_units} for f in db.query(Facility).all()],
+        facilities=[{"id": f.id, "safety_reserve_units": f.safety_reserve_units} for f in db.query(Facility).filter(Facility.is_connected == True).all()],
         inventory=[{"facility_id": it.facility_id, "quantity": it.quantity, "component_type": it.component_type, "blood_group": it.blood_group, "hours_to_expiry": 100} for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()],
-        demands=[{"facility_id": d.facility_id, "quantity_needed": d.quantity_needed, "component_type": d.component_type, "blood_group": d.blood_group} for d in db.query(DemandRecord).all()],
-        travel_time_matrix=TRAVEL_TIME_MATRIX
+        demands=[{"facility_id": d.hospital_id, "quantity_needed": d.quantity_needed, "component_type": d.component_type, "blood_group": d.blood_group} for d in db.query(EmergencyBloodRequest).all()],
+        travel_time_matrix=NASHIK_TRAVEL_TIMES
     )
     return optimizer._compute_baseline(
-        demands=[{"facility_id": d.facility_id, "quantity_needed": d.quantity_needed, "component_type": d.component_type, "blood_group": d.blood_group} for d in db.query(DemandRecord).all()],
+        demands=[{"facility_id": d.hospital_id, "quantity_needed": d.quantity_needed, "component_type": d.component_type, "blood_group": d.blood_group} for d in db.query(EmergencyBloodRequest).all()],
         items=[{"facility_id": it.facility_id, "quantity": it.quantity, "component_type": it.component_type, "blood_group": it.blood_group, "hours_to_expiry": 100} for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()],
         transfers=[]
     )
@@ -1558,70 +1883,36 @@ def get_audit_trail(limit: int = 100, db: Session = Depends(get_db)):
     logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
     return logs
 
-
-# ==========================================
-# 11. AI OPERATIONS COPILOT (Rule-based & Context-aware)
-# ==========================================
-class CopilotQuery(FastAPI):
-    query: str
-
 @app.post("/api/copilot/ask")
 def ask_copilot(payload: Dict[str, str], db: Session = Depends(get_db)):
     q = payload.get("query", "").lower()
     
-    # Analyze current DB state
     facs = db.query(Facility).all()
     items = db.query(InventoryItem).filter(InventoryItem.status == "available").all()
-    demands = db.query(DemandRecord).filter(DemandRecord.status.in_(["unmet", "partially_fulfilled"])).all()
-    alerts = db.query(Alert).filter(Alert.status == "active").all()
-    transfers = db.query(Transfer).all()
+    requests = db.query(EmergencyBloodRequest).all()
+    drivers = db.query(Driver).all()
 
     if "shortage" in q or "risk" in q:
-        shortages = []
-        for f in facs:
-            stock = sum(it.quantity for it in items if it.facility_id == f.id)
-            req = sum(dm.quantity_needed for dm in demands if dm.facility_id == f.id)
-            if stock < f.safety_reserve_units or req > stock:
-                shortages.append(f"{f.name} (Stock: {stock}, Reserve: {f.safety_reserve_units}, Unmet Demand: {req})")
-        resp = "Current facilities facing projected shortage risks:\n" + ("\n- " + "\n- ".join(shortages) if shortages else "None! All facilities meet reserve thresholds.")
+        shortages = [f"{f.name} (Stock: {sum(it.quantity for it in items if it.facility_id == f.id)}, Reserve: {f.safety_reserve_units})" for f in facs if f.is_connected and sum(it.quantity for it in items if it.facility_id == f.id) < f.safety_reserve_units]
+        resp = "Current Nashik facilities facing projected shortage risk:\n" + ("\n- " + "\n- ".join(shortages) if shortages else "None! All connected facilities meet reserve thresholds.")
         return {"answer": resp, "type": "shortage_analysis"}
 
-    elif "expiry" in q or "expir" in q:
-        exp_units = [f"{it.tracking_id} ({it.blood_group} {it.component_type}, {it.quantity} units, exp: {it.expiry_date.strftime('%Y-%m-%d %H:%M')})" for it in items if (it.expiry_date - datetime.utcnow()).total_seconds() <= 72*3600]
-        resp = f"Found {len(exp_units)} inventory batch(es) expiring within 72 hours:\n" + ("\n- " + "\n- ".join(exp_units) if exp_units else "None. All units have safe shelf life.")
-        return {"answer": resp, "type": "expiry_analysis"}
+    elif "driver" in q or "courier" in q:
+        drv_info = [f"{d.name} ({d.vehicle_type}, {d.vehicle_number}) - Status: {d.status}" for d in drivers]
+        resp = f"Active Nashik Delivery Drivers ({len(drivers)} registered):\n" + "\n- " + "\n- ".join(drv_info)
+        return {"answer": resp, "type": "driver_analysis"}
 
-    elif "baseline" in q or "compare" in q or "impact" in q:
-        if LATEST_OPTIMIZATION_RESULT and "baseline_comparison" in LATEST_OPTIMIZATION_RESULT:
-            comp = LATEST_OPTIMIZATION_RESULT["baseline_comparison"]
-            imp = comp.get("improvement", {})
-            resp = (
-                f"Comparison of Baseline (Local stock only) vs Life-Loop MILP:\n"
-                f"- Service Level: Baseline {comp['baseline']['service_level_pct']}% -> Optimized {comp['life_loop_optimized']['service_level_pct']}%\n"
-                f"- Unmet Demand Units: {comp['baseline']['unmet_demand_units']} -> {comp['life_loop_optimized']['unmet_demand_units']} ({imp.get('unmet_demand_reduction_pct', 0)}% reduction)\n"
-                f"- Expiry Waste Prevented: {imp.get('waste_reduction_pct', 0)}% waste reduction\n"
-                f"- Transfers Proposed: {comp['life_loop_optimized']['transfers_dispatched']}"
-            )
-        else:
-            resp = "Please run the MILP Optimization first to generate the baseline vs optimized impact comparison."
-        return {"answer": resp, "type": "impact_comparison"}
-
-    elif "why" in q or "recommend" in q:
-        if LATEST_OPTIMIZATION_RESULT and LATEST_OPTIMIZATION_RESULT.get("proposed_transfers"):
-            t = LATEST_OPTIMIZATION_RESULT["proposed_transfers"][0]
-            resp = f"Latest transfer rationale: {t['explanation']}"
-        else:
-            resp = "The MILP optimization engine chooses routes that minimize weighted unmet emergency demand and near-expiry wastage while respecting component immunohematology compatibility and road transit times."
-        return {"answer": resp, "type": "explanation"}
+    elif "nashik" in q or "facility" in q:
+        resp = f"Life-Loop Nashik Network Status:\n- 12 facilities tracked ({len([f for f in facs if f.is_connected])} connected, {len([f for f in facs if not f.is_connected])} public directory listings)\n- Hubs: Arpan Blood Bank, Jankalyan Raktpedhi, District Civil Hospital\n- Level-1 Trauma Hospital: Apollo Hospitals Panchavati\n- Operating in Nashik City & District, Maharashtra."
+        return {"answer": resp, "type": "network_overview"}
 
     else:
         resp = (
-            f"Life-Loop Operations Copilot Status:\n"
-            f"- Monitoring {len(facs)} facilities in the network\n"
-            f"- {sum(it.quantity for it in items)} available blood units tracked\n"
-            f"- {len(alerts)} active expiry/shortage alerts\n"
-            f"- {len(transfers)} total transfer records logged.\n"
-            f"You can ask me about shortage risks, expiring batches, baseline comparisons, or why a transfer was recommended."
+            f"Life-Loop Nashik Operations Copilot:\n"
+            f"- Monitoring {len(facs)} facilities in Nashik District\n"
+            f"- {sum(it.quantity for it in items)} units of blood components tracked\n"
+            f"- {len([r for r in requests if r.status != 'fulfilled'])} active emergency requests\n"
+            f"- {len(drivers)} cold-chain delivery drivers ready for dispatch."
         )
         return {"answer": resp, "type": "general_overview"}
 
@@ -1644,4 +1935,3 @@ if os.path.exists(DIST_DIR) and os.path.exists(os.path.join(DIST_DIR, "assets"))
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)
         return FileResponse(os.path.join(DIST_DIR, "index.html"))
-

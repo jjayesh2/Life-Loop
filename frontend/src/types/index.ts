@@ -96,11 +96,13 @@ export interface InventoryItem {
   blood_group: string;
   component_type: string;
   quantity: number;
+  reserved_quantity?: number;
   batch_ref: string;
   collection_date: string;
   expiry_date: string;
   status: 'available' | 'reserved' | 'in_transit' | 'quarantined' | 'expired' | 'unavailable';
   storage_temp_c: number;
+  data_source_label?: string;
   qr_code_svg?: string;
   created_at: string;
   updated_at: string;
@@ -121,6 +123,11 @@ export interface DemandRecord {
   created_at: string;
 }
 
+export interface TemperatureReading {
+  timestamp: string;
+  temp_c: number;
+}
+
 export interface Transfer {
   id: number;
   transfer_id: string;
@@ -138,6 +145,12 @@ export interface Transfer {
   distance_km: number;
   status: 'proposed' | 'approved' | 'reserved' | 'ready_for_pickup' | 'dispatched' | 'in_transit' | 'received' | 'cancelled' | 'rejected';
   cancellation_reason?: string;
+  driver_id?: number;
+  driver_name?: string;
+  driver_phone?: string;
+  driver_vehicle?: string;
+  driver_status?: string;
+  driver_decline_reason?: string;
   optimization_run_id?: string;
   rationale?: string;
   driver_id?: number | null;
@@ -148,7 +161,9 @@ export interface Transfer {
   eta_minutes?: number | null;
   created_at: string;
   approved_at?: string;
+  driver_assigned_at?: string;
   dispatched_at?: string;
+  delivered_at?: string;
   received_at?: string;
 }
 
@@ -166,6 +181,7 @@ export interface Alert {
   hours_remaining?: number;
   status: 'active' | 'acknowledged' | 'resolved';
   email_delivery_status: string;
+  spoken_announcement?: string;
   created_at: string;
   acknowledged_at?: string;
 }

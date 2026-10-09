@@ -34,6 +34,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard },
+    { id: 'hospital_portal', label: 'Hospital Requisition', icon: HeartPulse },
+    { id: 'driver_portal', label: 'Courier Dispatch', icon: Truck },
     { id: 'inventory', label: 'Blood Inventory', icon: Boxes },
     { id: 'traceability', label: 'QR Traceability', icon: QrCode },
     { id: 'alerts', label: 'Expiry Alerts', icon: BellRing, badge: alertCount },
@@ -41,7 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'map', label: 'Network Map', icon: MapPin },
     { id: 'optimizer', label: 'Optimization Engine', icon: Cpu },
     { id: 'simulator', label: 'Emergency Simulator', icon: Flame },
-    { id: 'transfers', label: 'Transfer Management', icon: Truck },
+    { id: 'transfers', label: 'Transfer & Cold-Chain', icon: Truck },
     { id: 'analytics', label: 'Analytics & Impact', icon: BarChart3 },
     { id: 'audit', label: 'Audit Trail', icon: History },
     { id: 'settings', label: 'Settings & Controls', icon: Settings },

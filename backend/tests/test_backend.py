@@ -73,7 +73,7 @@ def test_facilities_list():
     assert res.status_code == 200
     facs = res.json()
     assert len(facs) >= 6
-    assert any(f["code"] == "MTC-01" for f in facs)
+    assert any(f["code"] == "NSK-DCH-01" for f in facs)
 
 def test_inventory_list_and_filter():
     res = client.get("/api/inventory?blood_group=O-")
@@ -201,3 +201,77 @@ def test_baseline_vs_optimized_impact():
     assert "improvement" in data
     # Service level should be >= baseline
     assert data["life_loop_optimized"]["service_level_pct"] >= data["baseline"]["service_level_pct"]
+
+def test_auth_and_demo_users():
+    """Verify demo accounts for all 4 roles."""
+    res = client.get("/api/auth/demo-users")
+    assert res.status_code == 200
+    users = res.json()
+    assert len(users) >= 4
+    roles = {u["role"] for u in users}
+    assert "network_admin" in roles
+    assert "hospital_staff" in roles
+    assert "blood_bank_staff" in roles
+    assert "driver" in roles
+
+    # Test login
+    login_res = client.post("/api/auth/login", json={"email": "apollo@lifeloop.in", "password": "hospital123"})
+    assert login_res.status_code == 200
+    login_data = login_res.json()
+    assert "access_token" in login_data
+    assert login_data["user"]["role"] == "hospital_staff"
+
+def test_emergency_request_end_to_end():
+    """Verify emergency request, algorithmic ranking, driver assignment, pickup, and delivery reconciliation."""
+    # 1. Hospital submits emergency request for 2 units O-
+    req_payload = {
+        "hospital_id": 4, # Apollo Hospitals
+        "blood_group": "O-",
+        "component_type": "Packed Red Blood Cells",
+        "quantity_needed": 2,
+        "urgency": "critical",
+        "clinical_notes": "Highway accident trauma victim"
+    }
+    create_res = client.post("/api/emergency-requests", json=req_payload)
+    assert create_res.status_code == 200
+    req_data = create_res.json()
+    assert req_data["request_id"] != ""
+    assert len(req_data["source_recommendations"]) > 0
+
+    req_id = req_data["request_id"]
+    top_source = req_data["source_recommendations"][0]
+
+    # 2. Approve source recommendation -> creates Transfer and assigns Driver
+    app_res = client.post(f"/api/emergency-requests/{req_id}/approve", json={
+        "source_facility_id": top_source["facility_id"],
+        "quantity": 2,
+        "approver_name": "Dr. Kulkarni"
+    })
+    assert app_res.status_code == 200
+    app_data = app_res.json()
+    tx_id = app_data["transfer_id"]
+    assert app_data["transfer_status"] == "driver_assigned"
+
+    # 3. Driver accepts mission
+    drv_res = client.post(f"/api/transfers/{tx_id}/driver-response", json={
+        "driver_id": 1,
+        "action": "accept"
+    })
+    assert drv_res.status_code == 200
+    assert drv_res.json()["driver_status"] == "accepted"
+
+    # 4. Driver confirms pickup -> starts cold chain monitoring
+    pickup_res = client.post(f"/api/transfers/{tx_id}/pickup", json={"driver_name": "Suresh Shinde"})
+    assert pickup_res.status_code == 200
+    assert pickup_res.json()["status"] == "dispatched"
+
+    # 5. Judge simulates cold chain temperature excursion
+    spike_res = client.post(f"/api/transfers/{tx_id}/temperature-spike", json={"spike_temp_c": 11.5})
+    assert spike_res.status_code == 200
+    assert spike_res.json()["temperature_status"] in ["critical", "critical_deviation"]
+
+    # 6. Hospital confirms receipt and reconciles stock atomically
+    deliv_res = client.post(f"/api/transfers/{tx_id}/deliver", json={"receiver_name": "Apollo Emergency Charge Nurse"})
+    assert deliv_res.status_code == 200
+    assert deliv_res.json()["status"] == "delivered"
+

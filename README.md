@@ -53,6 +53,34 @@ All 12 facilities in Life-Loop are authentic healthcare institutions operating i
 * **Connected Facilities (7):** Feature live bi-directional APIs, automated stock reservation, driver assignment, and real-time sensor streams.
 * **Public Directory Listings (5):** Display official telephone numbers, addresses, and external government verification links for regional reference and manual escalation.
 
+### Live e-RaktKosh Integration (28-node network)
+
+On top of the 12 seed facilities, the seeder ingests the **complete live e-RaktKosh register for Nashik District** (snapshot `2026-10-09 17:45`), sourced from the Ministry of Health & Family Welfare public portal ([eraktkosh.mohfw.gov.in](https://eraktkosh.mohfw.gov.in/)).
+
+| Artefact | File | Contents |
+| :--- | :--- | :--- |
+| Live centre register | `backend/data/nashik_blood_centres.csv` | 20 licensed blood centres with category, contact phone/email, last-updated timestamp |
+| Live stock snapshot | `backend/data/nashik_blood_stock_long.csv` | 490 rows (centre × component × group) of real **Units Available** |
+| Ingestion module | `backend/app/real_data.py` | `seed_real_data()` — merges centres, stock, contacts, travel matrix |
+
+**What the model now contains after seeding:**
+
+* **28 facilities** (12 seed + 16 additional live e-RaktKosh blood banks with IDs `103`–`120`) across Nashik city, Sinnar, Igatpuri, Deolali and Malegaon.
+* **20 facilities** marked `Live verified (e-RaktKosh 2026-10-09)` with real phone numbers and emails scraped from the register (e.g. Shree Sainath Blood Centre → `9022340171`, Arpan Blood Bank → `nandkishor@arpanbloodbank.org`).
+* **299 inventory items** totalling **8,237 units**, of which **278 rows / 8,012 units** carry the provenance label `e-RaktKosh live 2026-10-09`.
+* **6 real components**: Red Blood Cells, Fresh Frozen Plasma, Platelets, Cryoprecipitate, Cryo Poor Plasma, Whole Blood (e-RaktKosh naming normalised via `REAL_COMPONENT_MAP`, e.g. *Packed Red Blood Cells* → `Red Blood Cells`, *Plasma* → `Fresh Frozen Plasma`).
+* **756 travel-matrix pairs / 755 distance pairs** — the 7×7 hand-verified city matrix is extended to all 28 nodes by great-circle haversine distance at a 28 km/h cold-chain average, preserving the original verified values.
+* **299 chain-of-custody events**, one per real unit, authored by operator `e-RaktKosh Live Feed`.
+
+**Provenance in the UI:** the Inventory page renders a green `live` badge next to any batch ingested from the e-RaktKosh feed; un-badged rows are explicitly labelled `Demo stock — simulated`. Traceability lookup works by either the `LL-NSK-…` tracking ID or the `ERK-…` batch reference.
+
+**Re-ingesting the live feed:** replace the two CSVs in `backend/data/` and force a reseed:
+```powershell
+curl -X POST http://127.0.0.1:8000/api/scenarios/reset
+```
+
+> **Disclosure:** unit *quantities*, blood groups, and component types are the real published figures. Collection timestamps and therefore expiry windows are derived deterministically per-batch (max 73 h age) because e-RaktKosh does not expose per-unit collection dates. GPS coordinates for centres outside Nashik city are district-level approximations.
+
 ---
 
 ## 3. Architecture & Technology Stack

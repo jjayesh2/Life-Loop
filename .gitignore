@@ -13,3 +13,9 @@ test_lifeloop.db
 # Environment variables
 .env
 .env.local
+
+# Runtime logs
+*.log
+
+# Editor
+.vscode/

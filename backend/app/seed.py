@@ -1,3 +1,7 @@
+import csv
+import hashlib
+import math
+import os
 import uuid
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -6,6 +10,7 @@ from .models import (
     DemandRecord, Transfer, Alert, TraceabilityEvent, AuditLog, Scenario
 )
 from .services.traceability_service import generate_qr_svg_or_base64
+from .real_data import seed_real_data, REAL_LABEL
 
 # Verified Nashik Facilities from Nashik District Government Directory & e-RaktKosh
 NASHIK_FACILITIES = [
@@ -546,6 +551,14 @@ def seed_database(db: Session, force: bool = False):
         db.add(ev)
     db.commit()
 
+    # 4b. Merge live e-RaktKosh Nashik centres + real stock snapshots
+    # Adds the 18 remaining live blood banks (IDs 103-120) with verified
+    # contact details, extends the travel matrix via haversine, and ingests
+    # the real "Units Available" figures from the 2026-10-09 scrape.
+    fac_added, real_rows, real_units = seed_real_data(
+        db, now, NASHIK_FACILITIES, NASHIK_TRAVEL_TIMES, NASHIK_DISTANCES_KM
+    )
+
     # 5. Default Emergency Request (Apollo Hospitals Nashik needs 4 units of O- Negative RBC)
     req = EmergencyBloodRequest(
         request_id="REQ-NSK-2026-001",
@@ -627,3 +640,4 @@ def seed_database(db: Session, force: bool = False):
     evaluate_expiry_alerts(db)
 
     print("Nashik District verified healthcare network successfully seeded into SQLite.")
+    print("  + %d live e-RaktKosh blood centres, %d real stock rows, %d real units (%s)." % (fac_added, real_rows, real_units, REAL_LABEL))

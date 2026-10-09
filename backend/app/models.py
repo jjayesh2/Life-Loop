@@ -1,0 +1,253 @@
+import datetime
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy.orm import relationship
+from .database import Base
+
+class Facility(Base):
+    __tablename__ = "facilities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True)
+    name = Column(String(150), nullable=False)
+    facility_type = Column(String(50), nullable=False)  # Hospital, Blood Bank, Regional Center
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    address = Column(String(255), nullable=False)
+    city = Column(String(100), default="Nashik")
+    district = Column(String(100), default="Nashik")
+    state = Column(String(100), default="Maharashtra")
+    pincode = Column(String(20), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    contact_email = Column(String(100), nullable=True)
+    source_url = Column(String(255), nullable=True)
+    date_verified = Column(String(50), nullable=True)
+    verification_status = Column(String(50), default="Verified Public Directory")
+    is_connected = Column(Boolean, default=True)  # True = Life-Loop Connected, False = Public listing only
+    is_active = Column(Boolean, default=True)
+    safety_reserve_units = Column(Integer, default=15)  # min reserve units across components
+
+    inventory_items = relationship("InventoryItem", back_populates="facility")
+    demands = relationship("DemandRecord", back_populates="facility")
+    alerts = relationship("Alert", back_populates="facility")
+    users = relationship("User", back_populates="facility")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(150), nullable=False)
+    role = Column(String(50), nullable=False)  # admin, hospital_staff, blood_bank_officer, driver
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=True)
+    phone = Column(String(50), nullable=True)
+    password_hash = Column(String(255), default="demo_pbkdf2_hash")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    facility = relationship("Facility", back_populates="users")
+    driver_profile = relationship("Driver", back_populates="user", uselist=False)
+
+
+class Driver(Base):
+    __tablename__ = "drivers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    name = Column(String(150), nullable=False)
+    phone = Column(String(50), nullable=False)
+    vehicle_type = Column(String(50), default="Cold-Van")  # Cold-Van, Two-Wheeler Medical Box, Ambulance
+    vehicle_number = Column(String(50), default="MH-15-BL-1001")
+    current_lat = Column(Float, default=19.9975)
+    current_lng = Column(Float, default=73.7898)
+    status = Column(String(30), default="available")  # available, on_mission, off_duty
+    is_active = Column(Boolean, default=True)
+
+    user = relationship("User", back_populates="driver_profile")
+    assignments = relationship("Transfer", back_populates="driver")
+
+
+class InventoryItem(Base):
+    __tablename__ = "inventory_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tracking_id = Column(String(64), unique=True, index=True, nullable=False)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    blood_group = Column(String(10), nullable=False)  # A+, A-, B+, B-, AB+, AB-, O+, O-
+    component_type = Column(String(50), nullable=False)  # Red Blood Cells, Platelets, Fresh Frozen Plasma, Cryoprecipitate, Whole Blood
+    quantity = Column(Integer, nullable=False, default=1)
+    batch_ref = Column(String(64), nullable=False, index=True)
+    collection_date = Column(DateTime, nullable=False)
+    expiry_date = Column(DateTime, nullable=False, index=True)
+    status = Column(String(30), default="available")  # available, reserved, in_transit, quarantined, expired, unavailable
+    storage_temp_c = Column(Float, default=4.0)
+    qr_code_svg = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    facility = relationship("Facility", back_populates="inventory_items")
+    traceability_events = relationship("TraceabilityEvent", back_populates="inventory_item", cascade="all, delete-orphan")
+    transfers = relationship("Transfer", back_populates="inventory_item")
+
+
+class EmergencyRequest(Base):
+    __tablename__ = "emergency_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(64), unique=True, index=True, nullable=False)
+    requesting_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    blood_group = Column(String(10), nullable=False)
+    component_type = Column(String(50), nullable=False)
+    quantity_needed = Column(Integer, nullable=False)
+    quantity_allocated = Column(Integer, default=0)
+    quantity_fulfilled = Column(Integer, default=0)
+    urgency = Column(String(20), default="critical")  # critical, urgent, routine
+    required_by_time = Column(DateTime, nullable=True)
+    delivery_destination = Column(String(255), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String(30), default="submitted")  # submitted, proposed, partially_approved, fully_approved, in_transit, completed, cancelled, unmet
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    facility = relationship("Facility")
+    transfers = relationship("Transfer", back_populates="emergency_request")
+
+
+class DemandRecord(Base):
+    __tablename__ = "demand_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    blood_group = Column(String(10), nullable=False)
+    component_type = Column(String(50), nullable=False)
+    quantity_needed = Column(Integer, nullable=False)
+    urgency = Column(String(20), default="urgent")  # critical, urgent, routine
+    deadline_hours = Column(Float, default=6.0)
+    status = Column(String(30), default="unmet")  # unmet, fulfilled, partially_fulfilled
+    is_simulated = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    facility = relationship("Facility", back_populates="demands")
+
+
+class Transfer(Base):
+    __tablename__ = "transfers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_id = Column(String(64), unique=True, index=True, nullable=False)
+    emergency_request_id = Column(Integer, ForeignKey("emergency_requests.id"), nullable=True)
+    origin_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    destination_facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=False)
+    component_type = Column(String(50), nullable=False)
+    blood_group = Column(String(10), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    travel_time_minutes = Column(Float, nullable=False)
+    distance_km = Column(Float, default=15.0)
+    status = Column(String(30), default="proposed")  # proposed, approved, reserved, ready_for_pickup, dispatched, in_transit, received, cancelled, rejected
+    cancellation_reason = Column(String(255), nullable=True)
+    optimization_run_id = Column(String(64), nullable=True, index=True)
+    rationale = Column(Text, nullable=True)
+
+    # Driver & Logistics
+    driver_id = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_status = Column(String(30), default="unassigned")  # unassigned, assigned, accepted, en_route_pickup, picked_up, in_transit, delivered
+    temperature_current_c = Column(Float, default=4.0)
+    temperature_status = Column(String(20), default="normal")  # normal, warning, critical_excursion
+    eta_minutes = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    approved_at = Column(DateTime, nullable=True)
+    dispatched_at = Column(DateTime, nullable=True)
+    received_at = Column(DateTime, nullable=True)
+
+    origin = relationship("Facility", foreign_keys=[origin_facility_id])
+    destination = relationship("Facility", foreign_keys=[destination_facility_id])
+    inventory_item = relationship("InventoryItem", back_populates="transfers")
+    emergency_request = relationship("EmergencyRequest", back_populates="transfers")
+    driver = relationship("Driver", back_populates="assignments")
+    temperature_logs = relationship("TemperatureLog", back_populates="transfer", cascade="all, delete-orphan")
+
+
+class TemperatureLog(Base):
+    __tablename__ = "temperature_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_id = Column(Integer, ForeignKey("transfers.id"), nullable=False)
+    temperature_c = Column(Float, nullable=False)
+    sensor_id = Column(String(50), default="IOT-COLD-NASHIK-01")
+    is_simulated = Column(Boolean, default=True)
+    status = Column(String(20), default="normal")  # normal, warning, excursion
+    notes = Column(String(255), nullable=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    transfer = relationship("Transfer", back_populates="temperature_logs")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=True)
+    alert_type = Column(String(50), nullable=False)  # approaching_expiry, urgent_expiry, expired, shortage_risk, temp_excursion, transfer_delay
+    severity = Column(String(20), nullable=False)  # warning, critical, urgent, info
+    message = Column(String(255), nullable=False)
+    hours_remaining = Column(Float, nullable=True)
+    status = Column(String(20), default="active")  # active, acknowledged, resolved
+    email_delivery_status = Column(String(50), default="Simulated SMS/Email")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    acknowledged_at = Column(DateTime, nullable=True)
+
+    facility = relationship("Facility", back_populates="alerts")
+    inventory_item = relationship("InventoryItem")
+
+
+class TraceabilityEvent(Base):
+    __tablename__ = "traceability_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    inventory_item_id = Column(Integer, ForeignKey("inventory_items.id"), nullable=False)
+    event_type = Column(String(50), nullable=False)  # collection, storage_checked, transfer_proposed, dispatched, received, quarantined, status_change
+    facility_name = Column(String(150), nullable=False)
+    operator = Column(String(100), default="Life-Loop Authorized Operator")
+    details = Column(String(255), nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+    inventory_item = relationship("InventoryItem", back_populates="traceability_events")
+
+
+class Scenario(Base):
+    __tablename__ = "scenarios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scenario_id = Column(String(64), unique=True, index=True, nullable=False)
+    name = Column(String(150), nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(String(30), default="idle")  # idle, active, completed
+    events_json = Column(Text, default="[]")
+    baseline_metrics_json = Column(Text, default="{}")
+    optimized_metrics_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action = Column(String(100), nullable=False)
+    actor = Column(String(100), default="Operator")
+    entity_type = Column(String(50), nullable=False)
+    entity_id = Column(String(64), nullable=True)
+    details = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key = Column(String(50), primary_key=True)
+    value = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=True)

@@ -8,6 +8,7 @@ import { EmergencyRequestModal } from './components/EmergencyRequestModal';
 // Pages
 import { CommandCenter } from './pages/CommandCenter';
 import { HospitalPortal } from './pages/HospitalPortal';
+import { BloodBankPortal } from './pages/BloodBankPortal';
 import { DriverPortal } from './pages/DriverPortal';
 import { InventoryPage } from './pages/InventoryPage';
 import { TraceabilityPage } from './pages/TraceabilityPage';
@@ -27,11 +28,10 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 // Types and API
 import { DashboardSummary, Facility, Transfer, Alert } from './types';
 import { fetchDashboard, fetchFacilities, fetchTransfers, fetchAlerts } from './services/api';
-import { useAuth } from './context/AuthContext';
 
 function AppContent() {
   const { currentUser } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [currentTab, setCurrentTab] = useState<string>('admin_command');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [showCopilot, setShowCopilot] = useState<boolean>(false);
   const [showEmergencyModal, setShowEmergencyModal] = useState<boolean>(false);
@@ -46,8 +46,6 @@ function AppContent() {
 
   // Jump to specific item in Traceability
   const [traceTrackingId, setTraceTrackingId] = useState<string | undefined>(undefined);
-
-  const { currentUser } = useAuth();
 
   const reloadData = async () => {
     try {
@@ -72,13 +70,17 @@ function AppContent() {
     return () => clearInterval(interval);
   }, []);
 
-  // When role changes via Demo Role Switcher, jump to corresponding view
+  // When role changes via Demo Role Switcher, jump to corresponding default view
   useEffect(() => {
     if (!currentUser) return;
     if (currentUser.role === 'driver') {
-      setCurrentTab('driver_portal');
+      setCurrentTab('driver_overview');
     } else if (currentUser.role === 'hospital_staff') {
-      setCurrentTab('hospital_portal');
+      setCurrentTab('hospital_overview');
+    } else if (currentUser.role === 'blood_bank_officer') {
+      setCurrentTab('bb_overview');
+    } else {
+      setCurrentTab('admin_command');
     }
   }, [currentUser?.id, currentUser?.role]);
 
@@ -94,9 +96,9 @@ function AppContent() {
   const handleGlobalSearch = (query: string) => {
     if (query.toUpperCase().startsWith('LL-') || query.toUpperCase().startsWith('B-')) {
       setTraceTrackingId(query);
-      setCurrentTab('traceability');
+      setCurrentTab('admin_inventory');
     } else {
-      setCurrentTab('inventory');
+      setCurrentTab('admin_inventory');
     }
   };
 
@@ -111,7 +113,11 @@ function AppContent() {
         <Sidebar
           currentTab={currentTab}
           setCurrentTab={(tab) => {
-            setCurrentTab(tab);
+            if (tab === 'hospital_create_req') {
+              setShowEmergencyModal(true);
+            } else {
+              setCurrentTab(tab);
+            }
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
           collapsed={sidebarCollapsed}
@@ -127,7 +133,11 @@ function AppContent() {
             selectedFacility={selectedFacilityId}
             setSelectedFacility={setSelectedFacilityId}
             onOpenCopilot={() => setShowCopilot(true)}
-            onNavigateToAlerts={() => setCurrentTab('alerts')}
+            onNavigateToAlerts={() => {
+              if (currentUser?.role === 'hospital_staff') setCurrentTab('hospital_alerts');
+              else if (currentUser?.role === 'blood_bank_officer') setCurrentTab('bb_expiry');
+              else setCurrentTab('admin_expiry');
+            }}
             onOpenEmergencyModal={() => setShowEmergencyModal(true)}
             alerts={alerts}
             onSearch={handleGlobalSearch}
@@ -135,7 +145,8 @@ function AppContent() {
 
           {/* Page Body */}
           <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
-            {currentTab === 'dashboard' && (
+            {/* ----------------- ADMIN ROUTES ----------------- */}
+            {(currentTab === 'admin_command' || currentTab === 'dashboard') && (
               <CommandCenter
                 data={dashboardData}
                 facilities={facilities}
@@ -144,41 +155,76 @@ function AppContent() {
                 onSelectFacility={(fac) => {
                   setSelectedFacilityId(fac.id);
                   setSelectedFacilityObj(fac);
-                  setCurrentTab('map');
+                  setCurrentTab('admin_map');
                 }}
                 selectedFacility={selectedFacilityObj}
               />
             )}
 
-            {currentTab === 'hospital' && (
+            {currentTab === 'admin_facilities' && (
+              <NetworkMapPage facilities={facilities} transfers={transfers} />
+            )}
+
+            {(currentTab === 'admin_requests' || currentTab === 'hospital') && (
               <HospitalPortal
                 facilities={facilities}
                 onOpenEmergencyModal={() => setShowEmergencyModal(true)}
               />
             )}
 
-            {currentTab === 'driver' && (
-              <DriverPortal />
-            )}
-
-            {currentTab === 'inventory' && (
+            {(currentTab === 'admin_inventory' || currentTab === 'inventory') && (
               <InventoryPage
                 facilities={facilities}
                 onOpenTraceability={(tid) => {
                   setTraceTrackingId(tid);
-                  setCurrentTab('traceability');
+                  setCurrentTab(currentUser?.role === 'blood_bank_officer' ? 'bb_traceability' : 'admin_inventory');
                 }}
               />
             )}
 
-            {currentTab === 'traceability' && (
-              <TraceabilityPage initialTrackingId={traceTrackingId} />
+            {(currentTab === 'admin_transfers' || currentTab === 'transfers') && (
+              <TransfersPage />
             )}
 
-            {currentTab === 'alerts' && (
+            {(currentTab === 'admin_optimizer' || currentTab === 'optimizer') && (
+              <OptimizerPage
+                onNavigateToTransfers={() => {
+                  reloadData();
+                  setCurrentTab('admin_transfers');
+                }}
+              />
+            )}
+
+            {(currentTab === 'admin_map' || currentTab === 'map') && (
+              <NetworkMapPage facilities={facilities} transfers={transfers} />
+            )}
+
+            {(currentTab === 'admin_expiry' || currentTab === 'alerts') && (
               <ExpiryAlertsPage
                 facilities={facilities}
-                onNavigateToInventory={() => setCurrentTab('inventory')}
+                onNavigateToInventory={() => setCurrentTab('admin_inventory')}
+              />
+            )}
+
+            {(currentTab === 'admin_analytics' || currentTab === 'analytics') && (
+              <AnalyticsPage />
+            )}
+
+            {(currentTab === 'admin_audit' || currentTab === 'audit') && (
+              <AuditTrailPage />
+            )}
+
+            {(currentTab === 'admin_settings' || currentTab === 'settings') && (
+              <SettingsPage
+                facilities={facilities}
+                onReloadAll={reloadData}
+              />
+            )}
+
+            {currentTab === 'simulator' && (
+              <EmergencySimulatorPage
+                facilities={facilities}
+                onNavigateToOptimizer={() => setCurrentTab('admin_optimizer')}
               />
             )}
 
@@ -186,43 +232,91 @@ function AppContent() {
               <ForecastsPage facilities={facilities} />
             )}
 
-            {currentTab === 'map' && (
-              <NetworkMapPage facilities={facilities} transfers={transfers} />
+            {currentTab === 'traceability' && (
+              <TraceabilityPage initialTrackingId={traceTrackingId} />
             )}
 
-            {currentTab === 'optimizer' && (
-              <OptimizerPage
-                onNavigateToTransfers={() => {
-                  reloadData();
-                  setCurrentTab('transfers');
+            {/* ----------------- HOSPITAL ROLE ROUTES ----------------- */}
+            {(currentTab === 'hospital_overview' || currentTab === 'hospital_requests' || currentTab === 'hospital_create_req' || currentTab === 'hospital_history') && (
+              <HospitalPortal
+                facilities={facilities}
+                onOpenEmergencyModal={() => setShowEmergencyModal(true)}
+              />
+            )}
+
+            {currentTab === 'hospital_incoming' && (
+              <TransfersPage initialFilterTab="in_transit" />
+            )}
+
+            {currentTab === 'hospital_inventory' && (
+              <InventoryPage
+                facilities={facilities}
+                onOpenTraceability={(tid) => {
+                  setTraceTrackingId(tid);
+                  setCurrentTab('hospital_inventory');
                 }}
               />
             )}
 
-            {currentTab === 'simulator' && (
-              <EmergencySimulatorPage
+            {currentTab === 'hospital_alerts' && (
+              <ExpiryAlertsPage
                 facilities={facilities}
-                onNavigateToOptimizer={() => setCurrentTab('optimizer')}
+                onNavigateToInventory={() => setCurrentTab('hospital_inventory')}
               />
             )}
 
-            {currentTab === 'transfers' && (
-              <TransfersPage />
+            {currentTab === 'hospital_profile' && (
+              <NetworkMapPage facilities={facilities} transfers={transfers} />
             )}
 
-            {currentTab === 'analytics' && (
-              <AnalyticsPage />
-            )}
-
-            {currentTab === 'audit' && (
-              <AuditTrailPage />
-            )}
-
-            {currentTab === 'settings' && (
-              <SettingsPage
+            {/* ----------------- BLOOD BANK ROLE ROUTES ----------------- */}
+            {(currentTab === 'bb_overview' || currentTab === 'bb_requests' || currentTab === 'bb_approvals') && (
+              <BloodBankPortal
                 facilities={facilities}
-                onReloadAll={reloadData}
+                onNavigateToTab={(tab) => setCurrentTab(tab)}
+                onOpenTraceability={(tid) => {
+                  setTraceTrackingId(tid);
+                  setCurrentTab('bb_traceability');
+                }}
               />
+            )}
+
+            {currentTab === 'bb_inventory' && (
+              <InventoryPage
+                facilities={facilities}
+                onOpenTraceability={(tid) => {
+                  setTraceTrackingId(tid);
+                  setCurrentTab('bb_traceability');
+                }}
+              />
+            )}
+
+            {(currentTab === 'bb_outgoing' || currentTab === 'bb_history') && (
+              <TransfersPage initialFilterTab="approved" />
+            )}
+
+            {currentTab === 'bb_expiry' && (
+              <ExpiryAlertsPage
+                facilities={facilities}
+                onNavigateToInventory={() => setCurrentTab('bb_inventory')}
+              />
+            )}
+
+            {currentTab === 'bb_traceability' && (
+              <TraceabilityPage initialTrackingId={traceTrackingId} />
+            )}
+
+            {currentTab === 'bb_profile' && (
+              <NetworkMapPage facilities={facilities} transfers={transfers} />
+            )}
+
+            {/* ----------------- DRIVER ROLE ROUTES ----------------- */}
+            {(currentTab.startsWith('driver_') || currentTab === 'driver' || currentTab === 'driver_portal') && (
+              currentTab === 'driver_route' ? (
+                <NetworkMapPage facilities={facilities} transfers={transfers} />
+              ) : (
+                <DriverPortal />
+              )
             )}
           </main>
         </div>
@@ -242,7 +336,11 @@ function AppContent() {
           onClose={() => setShowEmergencyModal(false)}
           onRequestCreated={() => {
             reloadData();
-            setCurrentTab('hospital');
+            if (currentUser?.role === 'hospital_staff') {
+              setCurrentTab('hospital_requests');
+            } else {
+              setCurrentTab('admin_requests');
+            }
           }}
         />
       )}

@@ -150,6 +150,22 @@ class InventoryItemOut(InventoryItemBase):
     traceability_events: List[TraceabilityEventOut] = []
     model_config = ConfigDict(from_attributes=True)
 
+class DemandRecordBase(BaseModel):
+    facility_id: int
+    blood_group: str
+    component_type: str
+    quantity_needed: int
+    urgency: str = "urgent"
+    deadline_hours: float = 6.0
+    status: str = "unmet"
+    is_simulated: bool = False
+
+class DemandRecordOut(DemandRecordBase):
+    id: int
+    facility_name: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 # --- EMERGENCY BLOOD REQUESTS ---
 class SourceRecommendationItem(BaseModel):
     facility_id: int
@@ -162,33 +178,8 @@ class SourceRecommendationItem(BaseModel):
     rationale: str
 
 class EmergencyRequestCreate(BaseModel):
-    hospital_id: int
-    blood_group: str
-    component_type: str
-    quantity_needed: int
-    urgency: str = "critical"  # critical, urgent, routine
-    required_by_hours: float = 3.0
-    clinical_notes: Optional[str] = None
-
-class EmergencyRequestOut(BaseModel):
-    id: int
-    request_id: str
-    hospital_id: int
-    hospital_name: Optional[str] = None
-    blood_group: str
-    component_type: str
-    quantity_needed: int
-    quantity_fulfilled: int
-    urgency: str
-    required_by_time: datetime
-    clinical_notes: Optional[str] = None
-    status: str
-    source_recommendations: List[SourceRecommendationItem] = []
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-class EmergencyRequestCreate(BaseModel):
-    requesting_facility_id: int
+    requesting_facility_id: Optional[int] = None
+    hospital_id: Optional[int] = None
     blood_group: str
     component_type: str
     quantity_needed: int
@@ -197,12 +188,15 @@ class EmergencyRequestCreate(BaseModel):
     delivery_destination: Optional[str] = None
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
+    clinical_notes: Optional[str] = None
 
 class EmergencyRequestOut(BaseModel):
     id: int
     request_id: str
-    requesting_facility_id: int
+    requesting_facility_id: Optional[int] = None
+    hospital_id: Optional[int] = None
     requesting_facility_name: Optional[str] = None
+    hospital_name: Optional[str] = None
     blood_group: str
     component_type: str
     quantity_needed: int
@@ -213,9 +207,11 @@ class EmergencyRequestOut(BaseModel):
     delivery_destination: Optional[str] = None
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
+    clinical_notes: Optional[str] = None
     status: str
+    source_recommendations: List[SourceRecommendationItem] = []
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class TemperatureLogOut(BaseModel):

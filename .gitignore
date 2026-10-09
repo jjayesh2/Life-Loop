@@ -4,11 +4,13 @@ dist/
 
 # Python cache & tests
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 test_*.db
 test_lifeloop.db
+*.db
 
 # Environment variables
 .env

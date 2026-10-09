@@ -13,7 +13,7 @@ interface NetworkMapViewProps {
 }
 
 // Custom Leaflet Icons using SVG DivIcons
-const createFacilityIcon = (facilityType: string, isShortage: boolean, isConnected: boolean) => {
+const createFacilityIcon = (facilityType: string, isShortage: boolean, isConnected: boolean = true) => {
   const isHub = facilityType.includes('Blood Bank') || facilityType.includes('Raktpedhi');
   
   let bg = '#64748b'; // default slate for public directory

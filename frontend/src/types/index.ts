@@ -48,6 +48,17 @@ export interface Driver {
   is_active: boolean;
 }
 
+export interface FacilityResponse {
+  id: number;
+  emergency_request_id: number;
+  facility_id: number;
+  facility_name?: string;
+  response_type: 'accepted' | 'rejected';
+  quantity_accepted?: number;
+  rejection_reason?: string;
+  created_at: string;
+}
+
 export interface EmergencyRequest {
   id: number;
   request_id: string;
@@ -58,23 +69,39 @@ export interface EmergencyRequest {
   quantity_needed: number;
   quantity_allocated: number;
   quantity_fulfilled: number;
+  quantity_accepted?: number;
+  quantity_reserved?: number;
+  quantity_in_transit?: number;
+  quantity_delivered?: number;
   urgency: 'critical' | 'urgent' | 'routine';
   required_by_time?: string;
   delivery_destination?: string;
   contact_phone?: string;
   notes?: string;
-  status: 'submitted' | 'proposed' | 'partially_approved' | 'fully_approved' | 'in_transit' | 'completed' | 'cancelled' | 'unmet';
+  status: string;
   is_requester?: boolean;
   is_eligible_supplier?: boolean;
+  available_eligible_stock?: number;
   remaining_needed?: number;
+  remaining_shortage?: number;
+  my_response?: FacilityResponse | null;
+  facility_responses?: FacilityResponse[];
+  responses?: FacilityResponse[];
+  transfers?: Transfer[];
   source_recommendations?: Array<{
     facility_id: number;
     facility_name: string;
-    blood_group: string;
-    component_type: string;
-    available_units: number;
-    estimated_distance_km: number;
-    estimated_travel_time_minutes: number;
+    blood_group?: string;
+    component_type?: string;
+    available_units?: number;
+    eligible_units_available?: number;
+    recommended_units_to_take?: number;
+    distance_km?: number;
+    travel_time_minutes?: number;
+    estimated_distance_km?: number;
+    estimated_travel_time_minutes?: number;
+    hours_until_batch_expiry?: number;
+    rationale?: string;
   }>;
   created_at: string;
   updated_at: string;
@@ -155,14 +182,16 @@ export interface Transfer {
   quantity: number;
   travel_time_minutes: number;
   distance_km: number;
-  status: 'proposed' | 'approved' | 'reserved' | 'ready_for_pickup' | 'dispatched' | 'in_transit' | 'received' | 'cancelled' | 'rejected';
+  status: 'proposed' | 'approved' | 'reserved' | 'ready_for_driver' | 'ready_for_pickup' | 'dispatched' | 'in_transit' | 'delivered' | 'received' | 'cancelled' | 'rejected' | string;
   cancellation_reason?: string;
   driver_id?: number | null;
   driver_name?: string | null;
   driver_phone?: string;
   driver_vehicle?: string;
-  driver_status?: 'unassigned' | 'assigned' | 'accepted' | 'en_route_pickup' | 'picked_up' | 'in_transit' | 'delivered';
+  driver_status?: 'unassigned' | 'assigned' | 'accepted' | 'en_route_pickup' | 'picked_up' | 'in_transit' | 'delivered' | string;
   driver_decline_reason?: string;
+  proof_of_delivery?: string;
+  received_confirmed_by?: string;
   optimization_run_id?: string;
   rationale?: string;
   temperature_current_c?: number;

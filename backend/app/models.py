@@ -35,6 +35,7 @@ class Facility(Base):
     emergency_requests = relationship("EmergencyRequest", back_populates="facility")
     alerts = relationship("Alert", back_populates="facility")
     users = relationship("User", back_populates="facility")
+    facility_responses = relationship("FacilityResponse", back_populates="facility")
 
 
 class User(Base):
@@ -106,6 +107,10 @@ class EmergencyRequest(Base):
     blood_group = Column(String(10), nullable=False)
     component_type = Column(String(50), nullable=False)
     quantity_needed = Column(Integer, nullable=False)
+    quantity_accepted = Column(Integer, default=0)
+    quantity_reserved = Column(Integer, default=0)
+    quantity_in_transit = Column(Integer, default=0)
+    quantity_delivered = Column(Integer, default=0)
     quantity_allocated = Column(Integer, default=0)
     quantity_fulfilled = Column(Integer, default=0)
     urgency = Column(String(20), default="critical")  # critical, urgent, routine
@@ -113,12 +118,28 @@ class EmergencyRequest(Base):
     delivery_destination = Column(String(255), nullable=True)
     contact_phone = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
-    status = Column(String(30), default="submitted")  # submitted, proposed, partially_approved, fully_approved, in_transit, completed, cancelled, unmet
+    status = Column(String(30), default="PENDING_RESPONSES")  # PENDING_RESPONSES, PARTIALLY_FULFILLED, FULLY_FULFILLED, IN_TRANSIT, DELIVERED, COMPLETED, CANCELLED
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     facility = relationship("Facility", back_populates="emergency_requests")
     transfers = relationship("Transfer", back_populates="emergency_request")
+    facility_responses = relationship("FacilityResponse", back_populates="emergency_request", cascade="all, delete-orphan")
+
+
+class FacilityResponse(Base):
+    __tablename__ = "facility_responses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    emergency_request_id = Column(Integer, ForeignKey("emergency_requests.id"), nullable=False)
+    facility_id = Column(Integer, ForeignKey("facilities.id"), nullable=False)
+    response_type = Column(String(30), nullable=False)  # accepted, partially_accepted, rejected
+    quantity_accepted = Column(Integer, default=0)
+    rejection_reason = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    emergency_request = relationship("EmergencyRequest", back_populates="facility_responses")
+    facility = relationship("Facility", back_populates="facility_responses")
 
 
 class EmergencyBloodRequest(Base):
@@ -180,6 +201,8 @@ class Transfer(Base):
     cancellation_reason = Column(String(255), nullable=True)
     driver_status = Column(String(30), default="unassigned")  # unassigned, offered, accepted, declined
     driver_decline_reason = Column(String(255), nullable=True)
+    proof_of_delivery = Column(String(255), nullable=True)
+    received_confirmed_by = Column(String(100), nullable=True)
 
     # Temperature tracking (Validated component ranges)
     temperature_current_c = Column(Float, default=4.0)

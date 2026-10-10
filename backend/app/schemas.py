@@ -190,45 +190,6 @@ class EmergencyRequestCreate(BaseModel):
     notes: Optional[str] = None
     clinical_notes: Optional[str] = None
 
-class EmergencyRequestOut(BaseModel):
-    id: int
-    request_id: str
-    requesting_facility_id: Optional[int] = None
-    hospital_id: Optional[int] = None
-    requesting_facility_name: Optional[str] = None
-    hospital_name: Optional[str] = None
-    blood_group: str
-    component_type: str
-    quantity_needed: int
-    quantity_allocated: int = 0
-    quantity_fulfilled: int = 0
-    urgency: str
-    required_by_time: Optional[datetime] = None
-    delivery_destination: Optional[str] = None
-    contact_phone: Optional[str] = None
-    notes: Optional[str] = None
-    clinical_notes: Optional[str] = None
-    status: str
-    is_requester: bool = True
-    is_eligible_supplier: bool = False
-    remaining_needed: int = 0
-    source_recommendations: List[SourceRecommendationItem] = []
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
-class TemperatureLogOut(BaseModel):
-    id: int
-    transfer_id: int
-    temperature_c: float
-    sensor_id: str
-    is_simulated: bool
-    status: str
-    notes: Optional[str] = None
-    recorded_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
 # --- TRANSFERS & SHIPMENTS ---
 class TransferOut(BaseModel):
     id: int
@@ -244,8 +205,10 @@ class TransferOut(BaseModel):
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     driver_vehicle: Optional[str] = None
-    driver_status: str = "unassigned"  # unassigned, offered, accepted, declined
+    driver_status: Optional[str] = "unassigned"  # unassigned, offered, accepted, declined, in_transit, delivered
     driver_decline_reason: Optional[str] = None
+    proof_of_delivery: Optional[str] = None
+    received_confirmed_by: Optional[str] = None
 
     component_type: str
     blood_group: str
@@ -258,18 +221,84 @@ class TransferOut(BaseModel):
     cancellation_reason: Optional[str] = None
     optimization_run_id: Optional[str] = None
     rationale: Optional[str] = None
-    driver_id: Optional[int] = None
-    driver_name: Optional[str] = None
-    driver_status: Optional[str] = "unassigned"
     temperature_current_c: Optional[float] = 4.0
     temperature_status: Optional[str] = "normal"
-    eta_minutes: Optional[float] = None
     created_at: datetime
     approved_at: Optional[datetime] = None
     driver_assigned_at: Optional[datetime] = None
     dispatched_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TemperatureLogOut(BaseModel):
+    id: int
+    transfer_id: int
+    temperature_c: float
+    sensor_id: str
+    is_simulated: bool
+    status: str
+    notes: Optional[str] = None
+    recorded_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FacilityResponseOut(BaseModel):
+    id: int
+    emergency_request_id: int
+    facility_id: int
+    facility_name: Optional[str] = None
+    response_type: str  # accepted, partially_accepted, rejected
+    quantity_accepted: int = 0
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmergencyRequestAccept(BaseModel):
+    quantity: int
+    notes: Optional[str] = None
+
+
+class EmergencyRequestReject(BaseModel):
+    reason: str
+
+
+class EmergencyRequestOut(BaseModel):
+    id: int
+    request_id: str
+    requesting_facility_id: Optional[int] = None
+    hospital_id: Optional[int] = None
+    requesting_facility_name: Optional[str] = None
+    hospital_name: Optional[str] = None
+    blood_group: str
+    component_type: str
+    quantity_needed: int
+    quantity_accepted: int = 0
+    quantity_reserved: int = 0
+    quantity_in_transit: int = 0
+    quantity_delivered: int = 0
+    quantity_allocated: int = 0
+    quantity_fulfilled: int = 0
+    urgency: str
+    required_by_time: Optional[datetime] = None
+    delivery_destination: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    clinical_notes: Optional[str] = None
+    status: str
+    is_requester: bool = True
+    is_eligible_supplier: bool = False
+    available_eligible_stock: int = 0
+    remaining_needed: int = 0
+    remaining_shortage: int = 0
+    my_response: Optional[FacilityResponseOut] = None
+    responses: List[FacilityResponseOut] = []
+    transfers: List[TransferOut] = []
+    source_recommendations: List[SourceRecommendationItem] = []
+    created_at: datetime
+    updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 # --- ALERTS ---

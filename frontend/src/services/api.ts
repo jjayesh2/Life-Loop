@@ -185,8 +185,13 @@ export async function fetchLatestOptimization(): Promise<any> {
   return res.json();
 }
 
-export async function fetchTransfers(status?: string): Promise<Transfer[]> {
-  const url = status ? `${BASE_URL}/transfers?status=${status}` : `${BASE_URL}/transfers`;
+export async function fetchTransfers(status?: string, scope?: string, driverId?: number): Promise<Transfer[]> {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (scope) params.set('scope', scope);
+  if (driverId) params.set('driver_id', driverId.toString());
+  const qs = params.toString();
+  const url = qs ? `${BASE_URL}/transfers?${qs}` : `${BASE_URL}/transfers`;
   const res = await fetch(url, {
     headers: getAuthHeaders()
   });
@@ -395,6 +400,59 @@ export async function createEmergencyRequest(data: {
     body: JSON.stringify(data)
   });
   if (!res.ok) throw new Error('Failed to create emergency request');
+  return res.json();
+}
+
+export async function acceptEmergencyRequest(
+  requestId: string,
+  quantity: number,
+  notes?: string
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/emergency-requests/${requestId}/accept`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ quantity, notes })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || 'Failed to accept emergency request');
+  }
+  return res.json();
+}
+
+export async function rejectEmergencyRequest(
+  requestId: string,
+  reason: string
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/emergency-requests/${requestId}/reject`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ reason })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || 'Failed to record rejection');
+  }
+  return res.json();
+}
+
+export async function confirmTransferReceipt(
+  transferId: string,
+  confirmedBy?: string,
+  conditionNotes?: string
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/transfers/${transferId}/confirm-receipt`, {
+    method: 'POST',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      confirmed_by: confirmedBy || 'Hospital Receiving Staff',
+      condition_notes: conditionNotes || 'Cold box intact, temperature within range, units accepted into inventory.'
+    })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || 'Failed to confirm receipt');
+  }
   return res.json();
 }
 

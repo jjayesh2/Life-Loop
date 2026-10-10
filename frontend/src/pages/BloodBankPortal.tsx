@@ -13,10 +13,21 @@ import {
   ShieldAlert,
   Thermometer,
   Layers,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide-react';
 import { Facility, Transfer, InventoryItem, Alert, EmergencyRequest } from '../types';
-import { fetchTransfers, fetchInventory, fetchAlerts, approveTransfer, rejectTransfer, subscribeToRealtimeEvents, fetchEmergencyRequests } from '../services/api';
+import {
+  fetchTransfers,
+  fetchInventory,
+  fetchAlerts,
+  approveTransfer,
+  rejectTransfer,
+  subscribeToRealtimeEvents,
+  fetchEmergencyRequests,
+  acceptEmergencyRequest,
+  rejectEmergencyRequest
+} from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { soundService } from '../services/soundService';
 
@@ -38,13 +49,23 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
 
-  // Modal states for approvals/rejections
+  // Modal states for approvals/rejections of MILP proposals
   const [approveModalTx, setApproveModalTx] = useState<Transfer | null>(null);
   const [authQty, setAuthQty] = useState<number>(1);
   const [rejectModalTx, setRejectModalTx] = useState<Transfer | null>(null);
   const [rejectReason, setRejectReason] = useState<string>(
     'Local emergency reserve threshold reached; unable to release requested units.'
   );
+
+  // Modal states for direct Emergency Request Accept / Reject
+  const [acceptReqModal, setAcceptReqModal] = useState<EmergencyRequest | null>(null);
+  const [acceptReqQty, setAcceptReqQty] = useState<number>(1);
+  const [acceptReqNotes, setAcceptReqNotes] = useState<string>('Stock verified and authorized for emergency dispatch');
+  const [isAcceptingReq, setIsAcceptingReq] = useState<boolean>(false);
+
+  const [rejectReqModal, setRejectReqModal] = useState<EmergencyRequest | null>(null);
+  const [rejectReqReason, setRejectReqReason] = useState<string>('Reserved for local NICU & trauma surgical threshold');
+  const [isRejectingReq, setIsRejectingReq] = useState<boolean>(false);
 
   const loadData = async () => {
     try {
@@ -155,6 +176,52 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
       await loadData();
     } catch (err: any) {
       alert(`Rejection failed: ${err.message}`);
+    }
+  };
+
+  const openAcceptReqModal = (req: EmergencyRequest) => {
+    setAcceptReqModal(req);
+    const maxPoss = Math.min(
+      req.remaining_shortage ?? req.quantity_needed,
+      req.available_eligible_stock ?? req.quantity_needed
+    );
+    setAcceptReqQty(Math.max(1, maxPoss));
+    setAcceptReqNotes('Stock verified and authorized for emergency dispatch');
+  };
+
+  const handleConfirmAcceptReq = async () => {
+    if (!acceptReqModal) return;
+    try {
+      setIsAcceptingReq(true);
+      soundService.playAlertPing();
+      await acceptEmergencyRequest(acceptReqModal.request_id, acceptReqQty, acceptReqNotes);
+      soundService.speak(`Emergency requisition accepted for ${acceptReqQty} units. Consignment created.`);
+      setAcceptReqModal(null);
+      await loadData();
+    } catch (err: any) {
+      alert(`Acceptance failed: ${err.message}`);
+    } finally {
+      setIsAcceptingReq(false);
+    }
+  };
+
+  const openRejectReqModal = (req: EmergencyRequest) => {
+    setRejectReqModal(req);
+    setRejectReqReason('Reserved for local NICU & trauma surgical threshold');
+  };
+
+  const handleConfirmRejectReq = async () => {
+    if (!rejectReqModal) return;
+    try {
+      setIsRejectingReq(true);
+      await rejectEmergencyRequest(rejectReqModal.request_id, rejectReqReason);
+      soundService.speak("Response logged. Requisition remains open for regional network facilities.");
+      setRejectReqModal(null);
+      await loadData();
+    } catch (err: any) {
+      alert(`Rejection failed: ${err.message}`);
+    } finally {
+      setIsRejectingReq(false);
     }
   };
 
@@ -323,18 +390,21 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
                 <th className="p-3">Urgency</th>
                 <th className="p-3">Status</th>
                 <th className="p-3">Logged At</th>
+                <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {emergencyRequests.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-slate-400">
+                  <td colSpan={9} className="p-6 text-center text-slate-400">
                     No active emergency requisitions in the network.
                   </td>
                 </tr>
               ) : (
                 emergencyRequests.map((req) => {
-                  const rem = req.remaining_needed ?? (req.quantity_needed - (req.quantity_fulfilled || 0));
+                  const remShortage = req.remaining_shortage ?? Math.max(0, req.quantity_needed - (req.quantity_accepted || 0));
+                  const myResp = req.my_response;
+                  const canAct = (req.is_eligible_supplier || (req.available_eligible_stock || 0) > 0) && remShortage > 0;
                   return (
                     <tr key={req.id} className="hover:bg-slate-50/80 transition">
                       <td className="p-3 font-mono font-bold text-teal-800">
@@ -356,17 +426,22 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
                       </td>
                       <td className="p-3 font-bold text-slate-800">
                         <span>{req.quantity_needed} Units</span>
-                        {req.quantity_fulfilled > 0 && (
-                          <span className="block text-[10px] text-emerald-600 font-semibold">
-                            Fulfilled: {req.quantity_fulfilled} (Rem: {rem})
-                          </span>
-                        )}
+                        <div className="text-[10px] text-slate-500 font-normal">
+                          {(req.quantity_accepted || 0) > 0 && (
+                            <span className="text-emerald-600 block">Accepted: {req.quantity_accepted}</span>
+                          )}
+                          {remShortage > 0 ? (
+                            <span className="text-amber-700 block">Shortage: {remShortage}</span>
+                          ) : (
+                            <span className="text-emerald-700 font-semibold block">Covered</span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         {req.is_eligible_supplier ? (
                           <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
                             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            <span>Eligible Supplier</span>
+                            <span>{req.available_eligible_stock || 0} Units Ready</span>
                           </span>
                         ) : (
                           <span className="text-[10px] text-slate-400 italic">
@@ -383,15 +458,48 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
                       </td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                          req.status === 'completed' || req.status === 'fully_approved'
+                          req.status === 'completed' || req.status === 'COMPLETED' || req.status === 'fully_approved'
                             ? 'bg-emerald-100 text-emerald-800'
-                            : (req.status === 'in_transit' ? 'bg-blue-100 text-blue-800' : (req.status === 'partially_approved' ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-50 text-amber-700'))
+                            : (req.status === 'in_transit' ? 'bg-blue-100 text-blue-800' : (req.status === 'PARTIALLY_FULFILLED' || req.status === 'partially_approved' ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-50 text-amber-700'))
                         }`}>
                           {req.status}
                         </span>
                       </td>
                       <td className="p-3 text-slate-400">
                         {new Date(req.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td className="p-3 text-right">
+                        {myResp ? (
+                          <span className={`text-[10px] font-bold px-2 py-1 rounded ${
+                            myResp.response_type === 'accepted'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-red-50 text-red-700 border border-red-200'
+                          }`}>
+                            {myResp.response_type === 'accepted'
+                              ? `Accepted ${myResp.quantity_accepted} units`
+                              : 'Declined (Logged)'}
+                          </span>
+                        ) : canAct ? (
+                          <div className="flex items-center justify-end space-x-1.5">
+                            <button
+                              onClick={() => openRejectReqModal(req)}
+                              className="px-2 py-1 text-red-600 border border-red-200 hover:bg-red-50 rounded text-xs font-semibold transition"
+                            >
+                              Reject
+                            </button>
+                            <button
+                              onClick={() => openAcceptReqModal(req)}
+                              className="px-2.5 py-1 bg-teal-600 hover:bg-teal-700 text-white rounded text-xs font-bold shadow transition flex items-center space-x-1"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Accept</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">
+                            {remShortage === 0 ? 'Covered' : 'No compatible units'}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -642,6 +750,123 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold shadow-md"
               >
                 Confirm Rejection &amp; Reallocate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Emergency Request Accept Modal */}
+      {acceptReqModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <CheckCircle2 className="w-5 h-5 text-teal-600" />
+                <span>Authorize &amp; Reserve Units</span>
+              </h3>
+              <button onClick={() => setAcceptReqModal(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="text-xs bg-slate-50 p-3 rounded-xl space-y-1">
+              <div>Request ID: <strong className="font-mono text-teal-700">{acceptReqModal.request_id}</strong></div>
+              <div>Destination Hospital: <strong>{acceptReqModal.requesting_facility_name}</strong></div>
+              <div>Blood Group: <strong className="text-red-700">{acceptReqModal.blood_group} {acceptReqModal.component_type}</strong></div>
+              <div>Remaining Shortage: <strong>{acceptReqModal.remaining_shortage ?? acceptReqModal.quantity_needed} Units</strong></div>
+              <div>Available Unreserved Units: <strong className="text-emerald-700">{acceptReqModal.available_eligible_stock ?? 0} Units</strong></div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Quantity to Accept &amp; Reserve</label>
+              <input
+                type="number"
+                min="1"
+                max={Math.min(acceptReqModal.remaining_shortage ?? acceptReqModal.quantity_needed, acceptReqModal.available_eligible_stock ?? acceptReqModal.quantity_needed)}
+                value={acceptReqQty}
+                onChange={(e) => setAcceptReqQty(Number(e.target.value))}
+                className="w-full text-xs p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500 font-bold"
+              />
+              <span className="text-[10px] text-slate-400 mt-1 block">
+                Stock is atomically reserved in database and a transportation assignment is created in 'Ready for Driver' status.
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Officer Authorization Notes</label>
+              <input
+                type="text"
+                value={acceptReqNotes}
+                onChange={(e) => setAcceptReqNotes(e.target.value)}
+                className="w-full text-xs p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setAcceptReqModal(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isAcceptingReq}
+                onClick={handleConfirmAcceptReq}
+                className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded-lg shadow disabled:opacity-50"
+              >
+                {isAcceptingReq ? 'Authorizing...' : 'Confirm Stock Reservation'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Emergency Request Reject Modal */}
+      {rejectReqModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+                <span>Decline Emergency Requisition</span>
+              </h3>
+              <button onClick={() => setRejectReqModal(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="text-xs bg-red-50 p-3 rounded-xl border border-red-200 text-red-900">
+              Declining this requisition records your facility's response. The emergency request remains active in the network for other facilities to fulfill.
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Reason for Declining</label>
+              <textarea
+                rows={3}
+                value={rejectReqReason}
+                onChange={(e) => setRejectReqReason(e.target.value)}
+                className="w-full text-xs p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500"
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setRejectReqModal(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRejectingReq}
+                onClick={handleConfirmRejectReq}
+                className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg shadow disabled:opacity-50"
+              >
+                {isRejectingReq ? 'Submitting...' : 'Confirm Rejection'}
               </button>
             </div>
           </div>

@@ -16,7 +16,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { Facility, Transfer, InventoryItem, Alert } from '../types';
-import { fetchTransfers, fetchInventory, fetchAlerts, approveTransfer, rejectTransfer } from '../services/api';
+import { fetchTransfers, fetchInventory, fetchAlerts, approveTransfer, rejectTransfer, subscribeToRealtimeEvents } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { soundService } from '../services/soundService';
 
@@ -65,8 +65,27 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 10000);
-    return () => clearInterval(interval);
+
+    // Subscribe to realtime WebSocket events across devices
+    const unsubscribe = subscribeToRealtimeEvents((event) => {
+      if (
+        event.type === 'EMERGENCY_REQUEST_CREATED' ||
+        event.type === 'TRANSFER_APPROVED' ||
+        event.type === 'TRANSFER_REJECTED' ||
+        event.type === 'TRANSFER_PROPOSED' ||
+        event.type === 'INVENTORY_UPDATED' ||
+        event.type === 'STATUS_CHANGE'
+      ) {
+        loadData();
+      }
+    });
+
+    // Fallback resilient polling every 5 seconds
+    const interval = setInterval(loadData, 5000);
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, [currentUser]);
 
   // Calculations

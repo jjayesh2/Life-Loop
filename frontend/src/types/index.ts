@@ -64,6 +64,18 @@ export interface EmergencyRequest {
   contact_phone?: string;
   notes?: string;
   status: 'submitted' | 'proposed' | 'partially_approved' | 'fully_approved' | 'in_transit' | 'completed' | 'cancelled' | 'unmet';
+  is_requester?: boolean;
+  is_eligible_supplier?: boolean;
+  remaining_needed?: number;
+  source_recommendations?: Array<{
+    facility_id: number;
+    facility_name: string;
+    blood_group: string;
+    component_type: string;
+    available_units: number;
+    estimated_distance_km: number;
+    estimated_travel_time_minutes: number;
+  }>;
   created_at: string;
   updated_at: string;
 }

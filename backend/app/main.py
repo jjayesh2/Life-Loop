@@ -980,14 +980,30 @@ async def approve_transfer(
     transfer_id: str,
     authorized_quantity: Optional[int] = None,
     payload: Optional[Dict[str, Any]] = None,
+    x_user_role: Optional[str] = Header(None),
+    x_facility_id: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
+    # Role & Authorization check: drivers or unauthenticated cannot approve
+    if x_user_role == "driver":
+        raise HTTPException(status_code=403, detail="Drivers cannot authorize transfer proposals or reserve inventory.")
+
     transfer_filter = (Transfer.transfer_id == transfer_id)
     if transfer_id.isdigit():
         transfer_filter = transfer_filter | (Transfer.id == int(transfer_id))
     tx = db.query(Transfer).filter(transfer_filter).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transfer not found")
+
+    # Facility authorization: supplying facility staff or network admin only
+    if x_facility_id and x_user_role not in ["admin", "network_admin"]:
+        try:
+            caller_fid = int(x_facility_id)
+            if caller_fid != tx.origin_facility_id:
+                raise HTTPException(status_code=403, detail="Only authorized personnel at the supplying origin facility can approve this stock release.")
+        except ValueError:
+            pass
+
     if tx.status != "proposed":
         raise HTTPException(status_code=400, detail=f"Cannot approve transfer with status '{tx.status}'")
 
@@ -1150,10 +1166,28 @@ async def approve_transfer(
     }
 
 @app.post("/api/transfers/{transfer_id}/reject")
-async def reject_transfer(transfer_id: str, payload: Optional[Dict[str, str]] = None, db: Session = Depends(get_db)):
+async def reject_transfer(
+    transfer_id: str,
+    payload: Optional[Dict[str, str]] = None,
+    x_user_role: Optional[str] = Header(None),
+    x_facility_id: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    # Drivers cannot reject facility transfer proposals
+    if x_user_role == "driver":
+        raise HTTPException(status_code=403, detail="Drivers cannot reject facility transfer proposals.")
+
     tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transfer not found")
+    if x_facility_id and x_user_role not in ["admin", "network_admin"]:
+        try:
+            caller_fid = int(x_facility_id)
+            if caller_fid != tx.origin_facility_id:
+                raise HTTPException(status_code=403, detail="Only authorized personnel at the supplying origin facility can reject this transfer proposal.")
+        except ValueError:
+            pass
+
     if tx.status != "proposed":
         raise HTTPException(status_code=400, detail=f"Cannot reject transfer with status '{tx.status}'")
 
@@ -1420,9 +1454,16 @@ def get_emergency_requests(
         except ValueError:
             pass
 
+    eff_user_id = user_id
+    if eff_user_id is None and x_user_id and x_user_id.strip():
+        try:
+            eff_user_id = int(x_user_id)
+        except ValueError:
+            pass
+
     eff_role = role or x_user_role
-    if not eff_role and user_id:
-        user = db.query(User).filter(User.id == user_id).first()
+    if not eff_role and eff_user_id:
+        user = db.query(User).filter(User.id == eff_user_id).first()
         if user:
             eff_role = user.role
             if eff_fac_id is None and user.facility_id:
@@ -1455,17 +1496,17 @@ def get_emergency_requests(
         is_supplier = (eff_fac_id in candidate_fac_ids or eff_fac_id in transfer_origins) if eff_fac_id else False
 
         # Role & Facility visibility rules:
-        # 1. Admin sees all network-wide requests
-        # 2. If no facility specified: return all
-        # 3. Hospital staff:
-        #    - Sees requests created by their facility (as requester)
-        #    - Sees requests where their facility is eligible to supply or assist as peer hospital
-        # 4. Blood bank officer:
-        #    - Sees requests where the blood bank is an eligible candidate supplier OR has a proposed/active transfer
-        # 5. Driver:
-        #    - Sees requests where they have an assigned transfer
+        # 1. Driver check MUST be prioritized if caller is a driver:
+        #    Drivers must NOT receive raw unapproved requests or gain authority over them.
+        #    Only visible if driver is specifically assigned to an approved, dispatched, or delivered transfer for this request.
         visible = False
-        if not eff_fac_id or eff_role in ["network_admin", "admin"]:
+        if eff_role == "driver":
+            driver_assigned = any(
+                tx.driver_id == eff_user_id and tx.status in ["approved", "reserved", "ready_for_pickup", "dispatched", "in_transit", "delivered", "received"]
+                for tx in transfers
+            )
+            visible = driver_assigned
+        elif eff_role in ["network_admin", "admin"] or not eff_fac_id:
             visible = True
         elif is_requester:
             visible = True
@@ -1483,13 +1524,8 @@ def get_emergency_requests(
             elif caller_facility and "Blood Bank" in caller_facility.facility_type:
                 # Any regional blood bank receives the STAT broadcast if stock is present or potentially available
                 visible = True
-        elif eff_role == "driver":
-            # Only see if there's an assigned transfer for this request
-            driver_assigned = any(tx.driver_id == user_id for tx in transfers if tx.driver_id)
-            if driver_assigned:
-                visible = True
         else:
-            visible = True
+            visible = False
 
         if visible:
             rem = max(0, r.quantity_needed - (r.quantity_fulfilled or 0))
@@ -1498,15 +1534,20 @@ def get_emergency_requests(
                 f_obj = db.query(Facility).filter(Facility.id == fac_id).first()
                 if f_obj:
                     t_time = TRAVEL_TIME_MATRIX.get((fac_id, r.requesting_facility_id), 20.0)
+                    fac_compat_units = sum(
+                        (it.quantity - (it.reserved_quantity or 0))
+                        for it in avail_items
+                        if it.facility_id == fac_id and is_compatible(r.component_type, it.blood_group, r.blood_group)
+                    )
                     recs.append(SourceRecommendationItem(
                         facility_id=f_obj.id,
                         facility_name=f_obj.name,
                         distance_km=round(t_time * 0.75, 1),
                         travel_time_minutes=t_time,
-                        eligible_units_available=0,
-                        recommended_units_to_take=0,
+                        eligible_units_available=fac_compat_units,
+                        recommended_units_to_take=min(rem, fac_compat_units),
                         hours_until_batch_expiry=48.0,
-                        rationale="Immunohematology compatible inventory source."
+                        rationale=f"Compatible {r.blood_group} {r.component_type} stock ({fac_compat_units} unreserved units available)."
                     ))
 
             res.append(EmergencyRequestOut(

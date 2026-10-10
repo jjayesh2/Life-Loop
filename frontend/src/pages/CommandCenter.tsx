@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Boxes,
   ShieldAlert,
@@ -12,8 +12,9 @@ import {
   MapPin,
   QrCode
 } from 'lucide-react';
-import { DashboardSummary, Facility, Transfer } from '../types';
+import { DashboardSummary, Facility, Transfer, EmergencyRequest } from '../types';
 import { NetworkMapView } from '../components/NetworkMapView';
+import { fetchEmergencyRequests, subscribeToRealtimeEvents } from '../services/api';
 import {
   BarChart,
   Bar,
@@ -45,6 +46,37 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
   onSelectFacility,
   selectedFacility
 }) => {
+  const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
+
+  useEffect(() => {
+    const loadRequests = async () => {
+      try {
+        const reqs = await fetchEmergencyRequests();
+        setEmergencyRequests(reqs);
+      } catch (err) {
+        console.error("Failed to load emergency requests in Command Center:", err);
+      }
+    };
+
+    loadRequests();
+    const unsubscribe = subscribeToRealtimeEvents((event) => {
+      if (
+        event.type === 'EMERGENCY_REQUEST_CREATED' ||
+        event.type === 'TRANSFER_APPROVED' ||
+        event.type === 'TRANSFER_REJECTED' ||
+        event.type === 'STATUS_CHANGE'
+      ) {
+        loadRequests();
+      }
+    });
+
+    const interval = setInterval(loadRequests, 6000);
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
+  }, []);
+
   if (!data) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -383,6 +415,99 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
               <div className="text-center py-8 text-xs text-slate-400">No transfers recorded yet.</div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Network Emergency Blood Requisitions (Admin Surveillance) */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <ShieldAlert className="w-5 h-5 text-red-600" />
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm">Network STAT Blood Requisitions</h3>
+              <p className="text-xs text-slate-500">Live surveillance of hospital requisitions across all network facilities</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-100 text-red-800">
+              {emergencyRequests.length} Total Logged
+            </span>
+            <button
+              onClick={() => onNavigate('hospital_portal')}
+              className="text-xs font-semibold text-teal-600 hover:text-teal-700"
+            >
+              Open Hospital Clinical View &rarr;
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="p-3">Requisition ID</th>
+                <th className="p-3">Requesting Hospital</th>
+                <th className="p-3">Blood Group & Component</th>
+                <th className="p-3">Demand (Total / Fulfilled)</th>
+                <th className="p-3">Urgency</th>
+                <th className="p-3">Status</th>
+                <th className="p-3">Destination</th>
+                <th className="p-3">Time</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {emergencyRequests.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-6 text-center text-slate-400">
+                    No emergency blood requisitions active in the network.
+                  </td>
+                </tr>
+              ) : (
+                emergencyRequests.map((req) => (
+                  <tr key={req.id} className="hover:bg-slate-50/80 transition">
+                    <td className="p-3 font-mono font-bold text-teal-800">{req.request_id}</td>
+                    <td className="p-3 font-medium text-slate-800">{req.requesting_facility_name || 'Hospital Ward'}</td>
+                    <td className="p-3">
+                      <span className="font-black text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100 mr-1.5">
+                        {req.blood_group}
+                      </span>
+                      <span className="text-slate-600">{req.component_type}</span>
+                    </td>
+                    <td className="p-3 font-bold text-slate-800">
+                      <span>{req.quantity_needed} Units</span>
+                      {req.quantity_fulfilled > 0 && (
+                        <span className="block text-[10px] text-emerald-600 font-normal">
+                          Fulfilled: {req.quantity_fulfilled} / Rem: {req.remaining_needed ?? (req.quantity_needed - req.quantity_fulfilled)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        req.urgency === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {req.urgency}
+                      </span>
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        req.status === 'completed' || req.status === 'fully_approved'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : (req.status === 'in_transit' ? 'bg-blue-100 text-blue-800' : (req.status === 'partially_approved' ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-50 text-amber-700'))
+                      }`}>
+                        {req.status}
+                      </span>
+                    </td>
+                    <td className="p-3 text-slate-600 truncate max-w-[140px]">
+                      {req.delivery_destination || 'Hospital Ward'}
+                    </td>
+                    <td className="p-3 text-slate-400">
+                      {new Date(req.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

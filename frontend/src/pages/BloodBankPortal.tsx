@@ -15,8 +15,8 @@ import {
   Layers,
   Sparkles
 } from 'lucide-react';
-import { Facility, Transfer, InventoryItem, Alert } from '../types';
-import { fetchTransfers, fetchInventory, fetchAlerts, approveTransfer, rejectTransfer, subscribeToRealtimeEvents } from '../services/api';
+import { Facility, Transfer, InventoryItem, Alert, EmergencyRequest } from '../types';
+import { fetchTransfers, fetchInventory, fetchAlerts, approveTransfer, rejectTransfer, subscribeToRealtimeEvents, fetchEmergencyRequests } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { soundService } from '../services/soundService';
 
@@ -36,6 +36,7 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
 
   // Modal states for approvals/rejections
   const [approveModalTx, setApproveModalTx] = useState<Transfer | null>(null);
@@ -48,14 +49,16 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
   const loadData = async () => {
     try {
       setLoading(true);
-      const [txs, inv, alts] = await Promise.all([
+      const [txs, inv, alts, emReqs] = await Promise.all([
         fetchTransfers(),
         fetchInventory(currentUser?.facility_id ? { facility_id: currentUser.facility_id } : undefined),
-        fetchAlerts()
+        fetchAlerts(),
+        fetchEmergencyRequests(currentUser?.facility_id || undefined)
       ]);
       setTransfers(txs);
       setInventory(inv);
       setAlerts(alts);
+      setEmergencyRequests(emReqs);
     } catch (err) {
       console.error("Failed to load blood bank data:", err);
     } finally {
@@ -272,7 +275,7 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
                     )}
                   </div>
 
-                  <div className="flex items-center space-x-2 self-end md:self-center">
+                    <div className="flex items-center space-x-2 self-end md:self-center">
                     <button
                       onClick={() => openRejectModal(tx)}
                       className="px-3 py-1.5 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-xs font-semibold transition"
@@ -291,6 +294,111 @@ export const BloodBankPortal: React.FC<BloodBankPortalProps> = ({
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* 3.1 Incoming Emergency Blood Requests Across Connected Facilities */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <ShieldAlert className="w-4 h-4 text-rose-600" />
+            <h2 className="text-sm font-bold text-slate-800">
+              Incoming Hospital Emergency Requests (District Network)
+            </h2>
+          </div>
+          <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">
+            {emergencyRequests.length} Network Demand(s)
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="p-3">Request ID</th>
+                <th className="p-3">Hospital</th>
+                <th className="p-3">Blood Group & Component</th>
+                <th className="p-3">Requested / Fulfilled</th>
+                <th className="p-3">Stock Eligibility</th>
+                <th className="p-3">Urgency</th>
+                <th className="p-3">Status</th>
+                <th className="p-3">Logged At</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {emergencyRequests.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-6 text-center text-slate-400">
+                    No active emergency requisitions in the network.
+                  </td>
+                </tr>
+              ) : (
+                emergencyRequests.map((req) => {
+                  const rem = req.remaining_needed ?? (req.quantity_needed - (req.quantity_fulfilled || 0));
+                  return (
+                    <tr key={req.id} className="hover:bg-slate-50/80 transition">
+                      <td className="p-3 font-mono font-bold text-teal-800">
+                        {req.request_id}
+                      </td>
+                      <td className="p-3 font-medium text-slate-800">
+                        <div>{req.requesting_facility_name || 'Hospital Ward'}</div>
+                        {req.delivery_destination && (
+                          <div className="text-[10px] text-slate-400 truncate max-w-[150px]">
+                            {req.delivery_destination}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <span className="font-black text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100 mr-1.5">
+                          {req.blood_group}
+                        </span>
+                        <span className="text-slate-600">{req.component_type}</span>
+                      </td>
+                      <td className="p-3 font-bold text-slate-800">
+                        <span>{req.quantity_needed} Units</span>
+                        {req.quantity_fulfilled > 0 && (
+                          <span className="block text-[10px] text-emerald-600 font-semibold">
+                            Fulfilled: {req.quantity_fulfilled} (Rem: {rem})
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {req.is_eligible_supplier ? (
+                          <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Eligible Supplier</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">
+                            Non-supplying or fulfilled
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          req.urgency === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                        }`}>
+                          {req.urgency}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          req.status === 'completed' || req.status === 'fully_approved'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : (req.status === 'in_transit' ? 'bg-blue-100 text-blue-800' : (req.status === 'partially_approved' ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-50 text-amber-700'))
+                        }`}>
+                          {req.status}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-400">
+                        {new Date(req.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

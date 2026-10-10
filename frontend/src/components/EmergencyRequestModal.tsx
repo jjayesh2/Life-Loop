@@ -44,6 +44,7 @@ export const EmergencyRequestModal: React.FC<EmergencyRequestModalProps> = ({
   const [notes, setNotes] = useState<string>('Trauma ICU admission following Nashik Highway collision. STAT request.');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [resultCandidates, setResultCandidates] = useState<any[] | null>(null);
+  const [createdRequestInfo, setCreatedRequestInfo] = useState<{ id: string; status: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,6 +64,10 @@ export const EmergencyRequestModal: React.FC<EmergencyRequestModalProps> = ({
       });
 
       soundService.speak(`Emergency requisition broadcasted across Nashik network for ${quantity} units of ${bloodGroup} ${componentType}.`);
+      setCreatedRequestInfo({
+        id: res.request_id || `REQ-${res.id}`,
+        status: res.request_status || 'PENDING_RESPONSES'
+      });
       setResultCandidates(res.candidates || []);
       onRequestCreated();
     } catch (err: any) {
@@ -242,14 +247,26 @@ export const EmergencyRequestModal: React.FC<EmergencyRequestModalProps> = ({
           </form>
         ) : (
           <div className="p-6 space-y-5">
-            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center space-x-3">
-              <CheckCircle2 className="w-8 h-8 text-emerald-600 flex-shrink-0" />
-              <div>
-                <h3 className="text-sm font-bold text-emerald-900">STAT Requisition Transmitted Successfully!</h3>
-                <p className="text-xs text-emerald-700">
-                  {quantity} units of {bloodGroup} {componentType} requested. Searching eligible Nashik repositories.
-                </p>
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+              <div className="flex items-center space-x-3">
+                <CheckCircle2 className="w-8 h-8 text-emerald-600 flex-shrink-0" />
+                <div>
+                  <h3 className="text-sm font-bold text-emerald-900">STAT Requisition Transmitted Successfully!</h3>
+                  <p className="text-xs text-emerald-700">
+                    {quantity} units of {bloodGroup} {componentType} requested. Broadcast sent to authorized network centers.
+                  </p>
+                </div>
               </div>
+              {createdRequestInfo && (
+                <div className="pt-2 border-t border-emerald-200/60 flex items-center justify-between text-xs">
+                  <span className="text-slate-600">
+                    Assigned Request ID: <strong className="font-mono text-teal-800 font-bold">{createdRequestInfo.id}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-amber-100 text-amber-800 border border-amber-200 uppercase">
+                    Status: {createdRequestInfo.status}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div>

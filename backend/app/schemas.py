@@ -209,10 +209,14 @@ class EmergencyRequestOut(BaseModel):
     notes: Optional[str] = None
     clinical_notes: Optional[str] = None
     status: str
+    is_requester: bool = True
+    is_eligible_supplier: bool = False
+    remaining_needed: int = 0
     source_recommendations: List[SourceRecommendationItem] = []
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
 
 class TemperatureLogOut(BaseModel):
     id: int

@@ -301,13 +301,81 @@ export async function fetchDemoUsers(): Promise<any[]> {
 // ----------------------------------------
 // Emergency Blood Requests
 // ----------------------------------------
-export async function fetchEmergencyRequests(facilityId?: number): Promise<any[]> {
+export async function fetchEmergencyRequests(facilityId?: number): Promise<EmergencyRequest[]> {
   const url = facilityId ? `${BASE_URL}/emergency-requests?facility_id=${facilityId}` : `${BASE_URL}/emergency-requests`;
   const res = await fetch(url, {
     headers: getAuthHeaders()
   });
   if (!res.ok) throw new Error('Failed to fetch emergency requests');
   return res.json();
+}
+
+// ----------------------------------------
+// Real-Time WebSocket Event Stream
+// ----------------------------------------
+export function subscribeToRealtimeEvents(onEvent: (event: { type: string; [key: string]: any }) => void): () => void {
+  let ws: WebSocket | null = null;
+  let isClosedExplicitly = false;
+  let reconnectTimeout: any = null;
+
+  const connect = () => {
+    if (isClosedExplicitly) return;
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || '';
+      let wsUrl: string;
+      if (apiUrl.startsWith('http://') || apiUrl.startsWith('https://')) {
+        const urlObj = new URL(apiUrl);
+        const protocol = urlObj.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${protocol}//${urlObj.host}/ws/live`;
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${protocol}//${window.location.host}/ws/live`;
+      }
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        // Connected
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          onEvent(data);
+        } catch {
+          // ignore non-json messages (e.g. heartbeat)
+        }
+      };
+
+      ws.onerror = () => {
+        // WebSocket error - wait for close to reconnect
+      };
+
+      ws.onclose = () => {
+        if (!isClosedExplicitly) {
+          reconnectTimeout = setTimeout(connect, 3000);
+        }
+      };
+    } catch (e) {
+      if (!isClosedExplicitly) {
+        reconnectTimeout = setTimeout(connect, 5000);
+      }
+    }
+  };
+
+  connect();
+
+  return () => {
+    isClosedExplicitly = true;
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        // ignore close error
+      }
+    }
+  };
 }
 
 export async function createEmergencyRequest(data: {

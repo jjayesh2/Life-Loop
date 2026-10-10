@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -333,59 +333,6 @@ def update_facility(fac_id: int, f_in: FacilityUpdate, db: Session = Depends(get
     })
 
 
-# ==========================================
-# 4. EMERGENCY BLOOD REQUESTS WORKFLOW
-# ==========================================
-
-@app.get("/api/emergency-requests", response_model=List[EmergencyRequestOut])
-def get_emergency_requests(hospital_id: Optional[int] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
-    q = db.query(EmergencyBloodRequest)
-    if hospital_id:
-        q = q.filter(EmergencyBloodRequest.hospital_id == hospital_id)
-    if status:
-        q = q.filter(EmergencyBloodRequest.status == status)
-    reqs = q.order_by(EmergencyBloodRequest.created_at.desc()).all()
-
-    res = []
-    for req in reqs:
-        recs = json.loads(req.source_recommendations_json or "[]")
-        res.append(EmergencyRequestOut(
-            id=req.id,
-            request_id=req.request_id,
-            hospital_id=req.hospital_id,
-            hospital_name=req.hospital.name if req.hospital else None,
-            blood_group=req.blood_group,
-            component_type=req.component_type,
-            quantity_needed=req.quantity_needed,
-            quantity_fulfilled=req.quantity_fulfilled,
-            urgency=req.urgency,
-            required_by_time=req.required_by_time,
-            clinical_notes=req.clinical_notes,
-            status=req.status,
-            source_recommendations=[SourceRecommendationItem(**r) for r in recs],
-            created_at=req.created_at,
-            updated_at=req.updated_at
-        ))
-    return res
-
-@app.post("/api/emergency-requests/{request_id}/approve")
-async def approve_request_source(
-    request_id: str,
-    payload: Dict[str, Any],
-    db: Session = Depends(get_db)
-):
-    source_fac_id = int(payload.get("source_facility_id", 2))
-    quantity = int(payload.get("quantity", 1))
-    approver = payload.get("approver_name", "Nashik Blood Bank Officer")
-
-    tx = await approve_transfer_and_assign_driver(
-        db=db,
-        request_id=request_id,
-        source_facility_id=source_fac_id,
-        quantity=quantity,
-        approver_name=approver
-    )
-    return {"status": "success", "transfer_id": tx.transfer_id, "transfer_status": tx.status}
 
 
 # ==========================================
@@ -858,52 +805,6 @@ def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
         ))
     return res
 
-@app.get("/api/transfers/{transfer_id}/manifest")
-def get_manifest(transfer_id: str, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    return generate_transfer_manifest_data(tx)
-
-@app.post("/api/transfers/{transfer_id}/approve")
-def approve_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    tx.status = "approved"
-    tx.approved_at = datetime.utcnow()
-    db.commit()
-    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
-
-@app.post("/api/transfers/{transfer_id}/dispatch")
-def dispatch_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    tx.status = "dispatched"
-    tx.dispatched_at = datetime.utcnow()
-    db.commit()
-    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
-
-@app.post("/api/transfers/{transfer_id}/receive")
-def receive_transfer_endpoint(transfer_id: str, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    tx.status = "received"
-    tx.received_at = datetime.utcnow()
-    db.commit()
-    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
-
-@app.post("/api/transfers/{transfer_id}/cancel")
-def cancel_transfer_endpoint(transfer_id: str, payload: Dict[str, Any] = {}, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    tx.status = "cancelled"
-    tx.cancellation_reason = payload.get("reason", "Operator cancelled")
-    db.commit()
-    return {"status": "success", "transfer_id": tx.transfer_id, "new_status": tx.status}
 
 
 # ==========================================
@@ -1075,8 +976,16 @@ def get_transfers(status: Optional[str] = None, db: Session = Depends(get_db)):
     return res
 
 @app.post("/api/transfers/{transfer_id}/approve")
-def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None, db: Session = Depends(get_db)):
-    tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
+async def approve_transfer(
+    transfer_id: str,
+    authorized_quantity: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    db: Session = Depends(get_db)
+):
+    transfer_filter = (Transfer.transfer_id == transfer_id)
+    if transfer_id.isdigit():
+        transfer_filter = transfer_filter | (Transfer.id == int(transfer_id))
+    tx = db.query(Transfer).filter(transfer_filter).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transfer not found")
     if tx.status != "proposed":
@@ -1087,16 +996,20 @@ def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None,
     if not item or item.status != "available":
         raise HTTPException(status_code=400, detail="Underlying inventory batch is no longer available or has been reserved.")
 
-    # Check authorized quantity (supports partial acceptance by supplying facility)
-    approved_qty = (payload or {}).get("authorized_quantity", tx.quantity)
-    if approved_qty <= 0 or approved_qty > item.quantity:
-        raise HTTPException(status_code=400, detail=f"Invalid authorized quantity: {approved_qty}. Available in batch: {item.quantity}")
+    # Check authorized quantity (supports partial acceptance by supplying facility via query param or body)
+    approved_qty = authorized_quantity or (payload or {}).get("authorized_quantity", tx.quantity)
+    available_units = item.quantity - (item.reserved_quantity or 0)
+    if approved_qty <= 0 or approved_qty > available_units:
+        raise HTTPException(status_code=400, detail=f"Invalid authorized quantity: {approved_qty}. Unreserved units available in batch: {available_units}")
 
-    # Atomic Reservation
+    # Atomic Reservation: increment reserved_quantity
+    item.reserved_quantity = (item.reserved_quantity or 0) + approved_qty
+    if item.reserved_quantity >= item.quantity:
+        item.status = "reserved"
+
     tx.quantity = approved_qty
     tx.status = "approved"
     tx.approved_at = datetime.utcnow()
-    item.status = "reserved"
 
     # Auto-assign available driver for logistics readiness
     avail_driver = db.query(Driver).filter(Driver.status == "available").first() or db.query(Driver).first()
@@ -1106,13 +1019,16 @@ def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None,
 
     # Update emergency request tracking if attached
     reopt_transfers = []
+    rem_needed = 0
     if tx.emergency_request:
-        tx.emergency_request.quantity_allocated += approved_qty
-        if tx.emergency_request.quantity_allocated >= tx.emergency_request.quantity_needed:
+        tx.emergency_request.quantity_fulfilled = (tx.emergency_request.quantity_fulfilled or 0) + approved_qty
+        tx.emergency_request.quantity_allocated = (tx.emergency_request.quantity_allocated or 0) + approved_qty
+        if tx.emergency_request.quantity_fulfilled >= tx.emergency_request.quantity_needed:
             tx.emergency_request.status = "fully_approved"
+            rem_needed = 0
         else:
             tx.emergency_request.status = "partially_approved"
-            rem_needed = tx.emergency_request.quantity_needed - tx.emergency_request.quantity_allocated
+            rem_needed = tx.emergency_request.quantity_needed - tx.emergency_request.quantity_fulfilled
             
             # Re-optimize remaining shortage across other connected facilities
             facilities_input = [
@@ -1126,11 +1042,12 @@ def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None,
                     "facility_id": it.facility_id,
                     "blood_group": it.blood_group,
                     "component_type": it.component_type,
-                    "quantity": it.quantity,
+                    "quantity": it.quantity - (it.reserved_quantity or 0),
                     "status": it.status,
                     "expiry_date": it.expiry_date
                 }
                 for it in db.query(InventoryItem).filter(InventoryItem.status == "available").all()
+                if (it.quantity - (it.reserved_quantity or 0)) > 0
             ]
             demands_input = [
                 {
@@ -1209,6 +1126,20 @@ def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None,
         alert.status = "resolved"
 
     db.commit()
+
+    # Real-time notification across all devices
+    await notifier.broadcast({
+        "type": "TRANSFER_APPROVED",
+        "transfer_id": tx.transfer_id,
+        "emergency_request_id": tx.emergency_request_id,
+        "origin_facility_id": tx.origin_facility_id,
+        "destination_facility_id": tx.destination_facility_id,
+        "quantity_approved": approved_qty,
+        "remaining_needed": rem_needed,
+        "status": tx.status,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
     return {
         "status": "success",
         "transfer_id": tx.transfer_id,
@@ -1219,7 +1150,7 @@ def approve_transfer(transfer_id: str, payload: Optional[Dict[str, Any]] = None,
     }
 
 @app.post("/api/transfers/{transfer_id}/reject")
-def reject_transfer(transfer_id: str, payload: Optional[Dict[str, str]] = None, db: Session = Depends(get_db)):
+async def reject_transfer(transfer_id: str, payload: Optional[Dict[str, str]] = None, db: Session = Depends(get_db)):
     tx = db.query(Transfer).filter((Transfer.transfer_id == transfer_id) | (Transfer.id == int(transfer_id) if transfer_id.isdigit() else False)).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transfer not found")
@@ -1325,6 +1256,19 @@ def reject_transfer(transfer_id: str, payload: Optional[Dict[str, str]] = None, 
         details=f"Transfer proposal {tx.transfer_id} rejected. Reason: {reason}"
     ))
     db.commit()
+
+    await notifier.broadcast({
+        "type": "TRANSFER_REJECTED",
+        "transfer_id": tx.transfer_id,
+        "emergency_request_id": tx.emergency_request_id,
+        "origin_facility_id": tx.origin_facility_id,
+        "destination_facility_id": tx.destination_facility_id,
+        "reason": reason,
+        "reallocated_transfers": reopt_transfers,
+        "status": tx.status,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
     return {"status": "success", "transfer_id": tx.transfer_id, "new_status": "rejected", "reason": reason, "reallocated_transfers": reopt_transfers}
 
 @app.post("/api/transfers/{transfer_id}/dispatch")
@@ -1458,46 +1402,212 @@ def get_current_user_profile(user_id: Optional[int] = 1, db: Session = Depends(g
 # 8.2 EMERGENCY BLOOD REQUESTS & CANDIDATE MATCHING
 # ==========================================
 @app.get("/api/emergency-requests", response_model=List[EmergencyRequestOut])
-def get_emergency_requests(facility_id: Optional[int] = None, db: Session = Depends(get_db)):
-    q = db.query(EmergencyRequest)
-    if facility_id:
-        q = q.filter(EmergencyRequest.requesting_facility_id == facility_id)
-    reqs = q.order_by(EmergencyRequest.created_at.desc()).all()
+def get_emergency_requests(
+    facility_id: Optional[int] = None,
+    role: Optional[str] = None,
+    user_id: Optional[int] = None,
+    request: Request = None,
+    x_facility_id: Optional[str] = Header(None),
+    x_user_role: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    # Determine effective facility and role from params or headers
+    eff_fac_id = facility_id
+    if eff_fac_id is None and x_facility_id and x_facility_id.strip():
+        try:
+            eff_fac_id = int(x_facility_id)
+        except ValueError:
+            pass
+
+    eff_role = role or x_user_role
+    if not eff_role and user_id:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            eff_role = user.role
+            if eff_fac_id is None and user.facility_id:
+                eff_fac_id = user.facility_id
+
+    reqs = db.query(EmergencyRequest).order_by(EmergencyRequest.created_at.desc()).all()
     res = []
+
+    # Get supplying facility facility type if eff_fac_id is provided
+    caller_facility = db.query(Facility).filter(Facility.id == eff_fac_id).first() if eff_fac_id else None
+
     for r in reqs:
-        res.append(EmergencyRequestOut(
-            id=r.id,
-            request_id=r.request_id,
-            requesting_facility_id=r.requesting_facility_id,
-            requesting_facility_name=r.facility.name if r.facility else None,
-            blood_group=r.blood_group,
-            component_type=r.component_type,
-            quantity_needed=r.quantity_needed,
-            quantity_allocated=r.quantity_allocated or 0,
-            quantity_fulfilled=r.quantity_fulfilled or 0,
-            urgency=r.urgency,
-            required_by_time=r.required_by_time,
-            delivery_destination=r.delivery_destination,
-            contact_phone=r.contact_phone,
-            notes=r.notes,
-            status=r.status,
-            created_at=r.created_at,
-            updated_at=r.updated_at
-        ))
+        # Determine candidate facilities for this request based on immunohematology
+        candidate_fac_ids = set()
+        avail_items = db.query(InventoryItem).filter(
+            InventoryItem.status == "available",
+            InventoryItem.facility_id != r.requesting_facility_id,
+            InventoryItem.component_type == r.component_type
+        ).all()
+        for it in avail_items:
+            if is_compatible(r.component_type, it.blood_group, r.blood_group):
+                candidate_fac_ids.add(it.facility_id)
+
+        # Facilities with transfers involving this request
+        transfers = db.query(Transfer).filter(Transfer.emergency_request_id == r.id).all()
+        transfer_origins = {tx.origin_facility_id for tx in transfers}
+        transfer_dests = {tx.destination_facility_id for tx in transfers}
+
+        is_requester = (eff_fac_id == r.requesting_facility_id) if eff_fac_id else False
+        is_supplier = (eff_fac_id in candidate_fac_ids or eff_fac_id in transfer_origins) if eff_fac_id else False
+
+        # Role & Facility visibility rules:
+        # 1. Admin sees all network-wide requests
+        # 2. If no facility specified: return all
+        # 3. Hospital staff:
+        #    - Sees requests created by their facility (as requester)
+        #    - Sees requests where their facility is eligible to supply or assist as peer hospital
+        # 4. Blood bank officer:
+        #    - Sees requests where the blood bank is an eligible candidate supplier OR has a proposed/active transfer
+        # 5. Driver:
+        #    - Sees requests where they have an assigned transfer
+        visible = False
+        if not eff_fac_id or eff_role in ["network_admin", "admin"]:
+            visible = True
+        elif is_requester:
+            visible = True
+        elif eff_role == "hospital_staff":
+            # Requester or eligible peer hospital
+            if eff_fac_id in candidate_fac_ids or eff_fac_id in transfer_origins:
+                visible = True
+            elif caller_facility and ("Hospital" in caller_facility.facility_type or caller_facility.is_connected):
+                # Peer connected hospital in Nashik network
+                visible = True
+        elif eff_role == "blood_bank_officer":
+            # Eligible supplying blood bank or participating transfer origin
+            if eff_fac_id in candidate_fac_ids or eff_fac_id in transfer_origins:
+                visible = True
+            elif caller_facility and "Blood Bank" in caller_facility.facility_type:
+                # Any regional blood bank receives the STAT broadcast if stock is present or potentially available
+                visible = True
+        elif eff_role == "driver":
+            # Only see if there's an assigned transfer for this request
+            driver_assigned = any(tx.driver_id == user_id for tx in transfers if tx.driver_id)
+            if driver_assigned:
+                visible = True
+        else:
+            visible = True
+
+        if visible:
+            rem = max(0, r.quantity_needed - (r.quantity_fulfilled or 0))
+            recs = []
+            for fac_id in candidate_fac_ids:
+                f_obj = db.query(Facility).filter(Facility.id == fac_id).first()
+                if f_obj:
+                    t_time = TRAVEL_TIME_MATRIX.get((fac_id, r.requesting_facility_id), 20.0)
+                    recs.append(SourceRecommendationItem(
+                        facility_id=f_obj.id,
+                        facility_name=f_obj.name,
+                        distance_km=round(t_time * 0.75, 1),
+                        travel_time_minutes=t_time,
+                        eligible_units_available=0,
+                        recommended_units_to_take=0,
+                        hours_until_batch_expiry=48.0,
+                        rationale="Immunohematology compatible inventory source."
+                    ))
+
+            res.append(EmergencyRequestOut(
+                id=r.id,
+                request_id=r.request_id,
+                requesting_facility_id=r.requesting_facility_id,
+                requesting_facility_name=r.facility.name if r.facility else None,
+                blood_group=r.blood_group,
+                component_type=r.component_type,
+                quantity_needed=r.quantity_needed,
+                quantity_allocated=r.quantity_allocated or 0,
+                quantity_fulfilled=r.quantity_fulfilled or 0,
+                urgency=r.urgency,
+                required_by_time=r.required_by_time,
+                delivery_destination=r.delivery_destination,
+                contact_phone=r.contact_phone,
+                notes=r.notes,
+                status=r.status,
+                is_requester=is_requester,
+                is_eligible_supplier=is_supplier,
+                remaining_needed=rem,
+                source_recommendations=recs,
+                created_at=r.created_at,
+                updated_at=r.updated_at
+            ))
     return res
 
+@app.get("/api/emergency-requests/{request_id}", response_model=EmergencyRequestOut)
+def get_emergency_request(request_id: str, db: Session = Depends(get_db)):
+    r = db.query(EmergencyRequest).filter(
+        (EmergencyRequest.request_id == request_id) |
+        (EmergencyRequest.id == int(request_id) if request_id.isdigit() else False)
+    ).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Emergency request not found")
+
+    rem = max(0, r.quantity_needed - (r.quantity_fulfilled or 0))
+    return EmergencyRequestOut(
+        id=r.id,
+        request_id=r.request_id,
+        requesting_facility_id=r.requesting_facility_id,
+        requesting_facility_name=r.facility.name if r.facility else None,
+        blood_group=r.blood_group,
+        component_type=r.component_type,
+        quantity_needed=r.quantity_needed,
+        quantity_allocated=r.quantity_allocated or 0,
+        quantity_fulfilled=r.quantity_fulfilled or 0,
+        urgency=r.urgency,
+        required_by_time=r.required_by_time,
+        delivery_destination=r.delivery_destination,
+        contact_phone=r.contact_phone,
+        notes=r.notes,
+        status=r.status,
+        is_requester=True,
+        is_eligible_supplier=False,
+        remaining_needed=rem,
+        source_recommendations=[],
+        created_at=r.created_at,
+        updated_at=r.updated_at
+    )
+
 @app.post("/api/emergency-requests")
-def create_emergency_request(req_in: EmergencyRequestCreate, db: Session = Depends(get_db)):
+async def create_emergency_request(req_in: EmergencyRequestCreate, db: Session = Depends(get_db)):
+    # 1. Validation
+    req_fac_id = req_in.requesting_facility_id or req_in.hospital_id
+    if not req_fac_id:
+        raise HTTPException(status_code=400, detail="requesting_facility_id is required")
+    if req_in.quantity_needed <= 0:
+        raise HTTPException(status_code=400, detail="quantity_needed must be greater than zero")
+
+    # 2. Prevent rapid duplicate submissions within 30 seconds
+    recent_dup = db.query(EmergencyRequest).filter(
+        EmergencyRequest.requesting_facility_id == req_fac_id,
+        EmergencyRequest.blood_group == req_in.blood_group,
+        EmergencyRequest.component_type == req_in.component_type,
+        EmergencyRequest.quantity_needed == req_in.quantity_needed,
+        EmergencyRequest.status.in_(["submitted", "proposed"]),
+        EmergencyRequest.created_at >= datetime.utcnow() - timedelta(seconds=30)
+    ).first()
+    if recent_dup:
+        return {
+            "status": "success",
+            "id": recent_dup.id,
+            "request_id": recent_dup.request_id,
+            "quantity_needed": recent_dup.quantity_needed,
+            "quantity_fulfilled": recent_dup.quantity_fulfilled,
+            "message": f"STAT Blood Requisition already registered (Request ID: {recent_dup.request_id}). Duplicate submission avoided.",
+            "candidates": [],
+            "proposed_transfers": []
+        }
+
     rid = f"REQ-STAT-{uuid.uuid4().hex[:6].upper()}"
     req_by = datetime.utcnow() + timedelta(hours=req_in.required_by_hours)
     dest = req_in.delivery_destination
     if not dest:
-        fac = db.query(Facility).filter(Facility.id == req_in.requesting_facility_id).first()
+        fac = db.query(Facility).filter(Facility.id == req_fac_id).first()
         dest = fac.name if fac else "Hospital Emergency Ward"
 
     em_req = EmergencyRequest(
         request_id=rid,
-        requesting_facility_id=req_in.requesting_facility_id,
+        requesting_facility_id=req_fac_id,
         blood_group=req_in.blood_group,
         component_type=req_in.component_type,
         quantity_needed=req_in.quantity_needed,
@@ -1658,9 +1768,25 @@ def create_emergency_request(req_in: EmergencyRequestCreate, db: Session = Depen
                     db.add(supplying_alert)
             db.commit()
 
+    # 3. Publish real-time event to all connected device dashboards
+    await notifier.broadcast({
+        "type": "EMERGENCY_REQUEST_CREATED",
+        "request_id": rid,
+        "requesting_facility_id": req_fac_id,
+        "blood_group": req_in.blood_group,
+        "component_type": req_in.component_type,
+        "quantity_needed": req_in.quantity_needed,
+        "urgency": req_in.urgency,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
     return {
         "status": "success",
+        "id": em_req.id,
         "request_id": rid,
+        "request_status": em_req.status,
+        "quantity_needed": em_req.quantity_needed,
+        "quantity_fulfilled": em_req.quantity_fulfilled,
         "message": f"STAT Blood Requisition created. Identified {len(candidates)} compatible supply source(s). Generated {len(proposed_transfers_list)} proposed transfer allocation(s).",
         "candidates": candidates,
         "proposed_transfers": proposed_transfers_list
@@ -1823,14 +1949,19 @@ def simulate_temp_spike(transfer_id: str, spike_temp: float = 11.5, db: Session 
 # ==========================================
 # 9. LIVE EMERGENCY SIMULATION & WEBSOCKET
 # ==========================================
+@app.websocket("/ws/live")
+@app.websocket("/ws/notifications")
 @app.websocket("/ws/scenarios/{scenario_id}")
-async def websocket_scenario_endpoint(websocket: WebSocket, scenario_id: str):
+async def websocket_live_endpoint(websocket: WebSocket, scenario_id: Optional[str] = "live"):
     await notifier.connect(websocket)
     try:
+        await websocket.send_json({"type": "CONNECTED", "payload": "Connected to Life-Loop Realtime Stream"})
         while True:
             data = await websocket.receive_text()
             await websocket.send_json({"type": "HEARTBEAT", "payload": "Connected to Life-Loop Nashik Stream"})
     except WebSocketDisconnect:
+        notifier.disconnect(websocket)
+    except Exception:
         notifier.disconnect(websocket)
 
 @app.post("/api/scenarios/event")
